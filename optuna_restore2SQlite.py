@@ -36,9 +36,8 @@ if __name__ == "__main__":
         print(f"加载 .pkl 文件时发生错误: {e}")
         exit()
 
-    # 2. --- 关键修改 ---
-    # 定义多目标优化的方向。这个列表必须与训练脚本中使用的 directions 完全一致！
-    # 新的目标是最大化四个准确率指标。
+    # 2. 定义多目标优化的方向。这个列表必须与训练脚本中使用的 directions 完全一致！
+    # 目标是最大化四个准确率指标。
     study_directions = ["maximize", "maximize", "maximize", "maximize"]
 
     # 3. 连接到数据库并创建或加载研究
@@ -63,8 +62,7 @@ if __name__ == "__main__":
 
     print(f"成功向研究 '{args.study_name}' 中添加了 {added_trials_count} 个新试验。")
 
-    # 5. --- 关键修改 ---
-    # 打印新研究的 Pareto 前沿结果，并更新标签以匹配新的优化目标
+    # 5. 打印新研究的 Pareto 前沿结果，并更新标签以匹配新的优化目标
     print("\n" + "="*60)
     print(f"    研究 '{args.study_name}' 的帕累托前沿结果 (准确率优化)")
     print("="*60)

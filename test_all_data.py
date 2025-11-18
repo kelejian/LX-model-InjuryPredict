@@ -31,7 +31,7 @@ set_random_seed()
 # --- 1. 配置区：请在此处设置您的路径 ---
 
 # 1.1) 要评估的模型所在的运行目录
-RUN_DIR = "./runs/TeacherModel_10261509"  # 示例: "./runs/TeacherModel_XXXXXXXX" 或 "./runs/StudentModel_XXXXXX"
+RUN_DIR = "./runs/InjuryPredictModel_10261509"  # 示例: "./runs/InjuryPredictModel_XXXXXXXX" 或 "./runs/StudentModel_XXXXXX"
 
 # 1.2) 要加载的模型权重文件名
 WEIGHT_FILE = "final_model.pth"
@@ -121,17 +121,8 @@ def load_model_and_data(run_dir, weight_file, data_dir=DATA_DIR):
 
     # 4. 实例化模型
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
-    if "teacher" in run_dir.lower():
-        print("检测到 TeacherModel。")
-        model_type = "teacher"
-        model = models.TeacherModel(**model_params, num_classes_of_discrete=num_classes_of_discrete).to(device)
-    elif "student" in run_dir.lower():
-        print("检测到 StudentModel。")
-        model_type = "student"
-        model = models.StudentModel(**model_params, num_classes_of_discrete=num_classes_of_discrete).to(device)
-    else:
-        raise ValueError("无法从 run_dir 名称中判断模型类型 ('teacher' 或 'student')。")
+
+    model = models.InjuryPredictModel(**model_params, num_classes_of_discrete=num_classes_of_discrete).to(device)
 
     # 5. 加载权重
     weight_path = os.path.join(run_dir, weight_file)
@@ -155,11 +146,7 @@ def run_inference(model, dataset, device, model_type):
             (batch_x_acc, batch_x_att_continuous, batch_x_att_discrete,
              _, _, _, _, _, _, _) = [d.to(device) for d in batch]
 
-            # 根据模型类型进行前向传播
-            if model_type == "teacher":
-                batch_pred, _, _ = model(batch_x_acc, batch_x_att_continuous, batch_x_att_discrete)
-            else: # student
-                batch_pred, _, _ = model(batch_x_att_continuous, batch_x_att_discrete)
+            batch_pred, _, _ = model(batch_x_acc, batch_x_att_continuous, batch_x_att_discrete)
             
             all_preds_list.append(batch_pred.cpu().numpy())
             

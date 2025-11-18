@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 from scipy import stats # 用于计算 KS 统计量
 
-# --- 关键：从您的项目中导入 CrashDataset 和 AIS 计算函数 ---
+# --- 从项目中导入 CrashDataset 和 AIS 计算函数 ---
 # 确保此脚本位于 utils 文件夹内
 try:
     from dataset_prepare import CrashDataset # 需要能够导入同级目录的 CrashDataset

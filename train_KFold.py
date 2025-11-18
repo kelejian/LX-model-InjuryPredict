@@ -1,8 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-train_teacher_KFold.py
-
-使用 K-Fold 交叉验证训练教师模型 (TeacherModel)。
+使用 K-Fold 交叉验证训练。
 加载由 dataset_prepare.py 生成的 train_dataset.pt 和 val_dataset.pt，
 将它们合并后进行 K-Fold 划分，并在每个 fold 上独立训练和验证模型。
 最终报告 K-Fold 的平均性能。
@@ -35,6 +33,7 @@ from utils.dataset_prepare import CrashDataset # 需要导入以加载 .pt 文�
 from utils.AIS_cal import AIS_cal_head, AIS_cal_chest, AIS_cal_neck 
 from utils.set_random_seed import GLOBAL_SEED, set_random_seed # 导入 GLOBAL_SEED
 
+from config import training_params, loss_params, model_params, kfold_params
 set_random_seed() # 设置全局随机种子
 
 def run_one_epoch(model, loader, criterion, device, optimizer=None):
@@ -211,7 +210,7 @@ def plot_confusion_matrix(cm, labels, title, save_path):
     plt.xlabel('Predicted Label', fontsize=14)
     plt.ylabel('True Label', fontsize=14)
     
-    # 修正：处理 cm.max() 为 0 的情况
+    # 处理 cm.max() 为 0 的情况
     thresh = cm.max() / 2. if cm.max() > 0 else 0.5 
     
     for i, j in np.ndindex(cm.shape):
@@ -223,50 +222,66 @@ def plot_confusion_matrix(cm, labels, title, save_path):
     plt.savefig(save_path)
     plt.close()
 
+def convert_numpy_types(obj):
+    if isinstance(obj, dict):
+        return {key: convert_numpy_types(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy_types(item) for item in obj]
+    elif isinstance(obj, tuple):
+        return tuple(convert_numpy_types(item) for item in obj)
+    elif isinstance(obj, (np.integer, np.int_)):
+        return int(obj)
+    elif isinstance(obj, (np.floating, np.float_)):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    else:
+        return obj
+
 if __name__ == "__main__":
     
-    # --- 1. 定义超参数 ---
     ############################################################################################
     ############################################################################################
-    # 定义所有可调超参数
+    # ---- 从导入的配置中加载超参数 ----
     # 1. 优化与训练相关
-    Epochs = 450
-    Batch_size = 512
-    Learning_rate = 0.02
-    Learning_rate_min = 1e-6
-    weight_decay = 6e-4
-    Patience = 1000 # 早停轮数
+    Epochs = training_params['Epochs']
+    Batch_size = training_params['Batch_size']
+    Learning_rate = training_params['Learning_rate']
+    Learning_rate_min = training_params['Learning_rate_min']
+    weight_decay = training_params['weight_decay']
+    Patience = training_params['Patience']
     
     # 2. 损失函数相关
-    base_loss = "mae"
-    weight_factor_classify = 1.1
-    weight_factor_sample = 0.2
-    loss_weights = (0.2, 1.0, 20.0) # HIC, Dmax, Nij 各自损失的权重
+    base_loss = loss_params['base_loss']
+    weight_factor_classify = loss_params['weight_factor_classify']
+    weight_factor_sample = loss_params['weight_factor_sample']
+    loss_weights = loss_params['loss_weights']
 
     # 3. 模型结构相关
-    Ksize_init = 8
-    Ksize_mid = 3
-    num_blocks_of_tcn = 3
-    tcn_channels_list = [64, 128, 160]  # 每个 TCN 块的输出通道数
-    num_layers_of_mlpE = 3
-    num_layers_of_mlpD = 3
-    mlpE_hidden = 192
-    mlpD_hidden = 160
-    encoder_output_dim = 128
-    decoder_output_dim = 96
-    dropout_MLP = 0.35
-    dropout_TCN = 0.15
-    use_channel_attention = True  # 是否使用通道注意力机制
-    fixed_channel_weight = [0.69, 0.3, 0.01]  # 固定的通道注意力权重(None表示自适应学习)
-    ############################################################################################
-    ############################################################################################
-    
+    Ksize_init = model_params['Ksize_init']
+    Ksize_mid = model_params['Ksize_mid']
+    num_blocks_of_tcn = model_params['num_blocks_of_tcn']
+    tcn_channels_list = model_params['tcn_channels_list']
+    num_layers_of_mlpE = model_params['num_layers_of_mlpE']
+    num_layers_of_mlpD = model_params['num_layers_of_mlpD']
+    mlpE_hidden = model_params['mlpE_hidden']
+    mlpD_hidden = model_params['mlpD_hidden']
+    encoder_output_dim = model_params['encoder_output_dim']
+    decoder_output_dim = model_params['decoder_output_dim']
+    dropout_MLP = model_params['dropout_MLP']
+    dropout_TCN = model_params['dropout_TCN']
+    use_channel_attention = model_params['use_channel_attention']
+    fixed_channel_weight = model_params['fixed_channel_weight']
+
     # K-Fold 设置
-    K = 5 # 设置 K 值 (例如 5 或 10)
+    K = kfold_params['K']
+
+    ############################################################################################
+    ############################################################################################
     
     # --- 2. 创建本次 K-Fold 运行的主目录 ---
     current_time = datetime.now().strftime("%m%d%H%M")
-    main_run_dir = os.path.join("./runs", f"TeacherModel_KFold_{current_time}")
+    main_run_dir = os.path.join("./runs", f"InjuryPredictModel_KFold_{current_time}")
     os.makedirs(main_run_dir, exist_ok=True)
     print(f"K-Fold 主运行目录: {main_run_dir}")
 
@@ -296,14 +311,71 @@ if __name__ == "__main__":
     
     # 获取模型所需的 num_classes_of_discrete
     num_classes_of_discrete = full_processed_dataset.num_classes_of_discrete
-    
+
+    # --- 预先实例化模型以获取参数量 ---
+    print("正在计算模型参数量...")
+    dummy_model = models.InjuryPredictModel(
+        Ksize_init=Ksize_init, Ksize_mid=Ksize_mid,
+        num_classes_of_discrete=num_classes_of_discrete,
+        num_blocks_of_tcn=num_blocks_of_tcn, tcn_channels_list=tcn_channels_list,
+        num_layers_of_mlpE=num_layers_of_mlpE, num_layers_of_mlpD=num_layers_of_mlpD,
+        mlpE_hidden=mlpE_hidden, mlpD_hidden=mlpD_hidden,
+        encoder_output_dim=encoder_output_dim, decoder_output_dim=decoder_output_dim,
+        dropout_MLP=dropout_MLP, dropout_TCN=dropout_TCN,
+        use_channel_attention=use_channel_attention, fixed_channel_weight=fixed_channel_weight
+    )
+    total_params = sum(p.numel() for p in dummy_model.parameters())
+    trainable_params = sum(p.numel() for p in dummy_model.parameters() if p.requires_grad)
+    print(dummy_model)
+    print(f"模型总参数量: {total_params}, 可训练参数量: {trainable_params}")
+    del dummy_model # 释放内存    
+
     # --- 4. 初始化 KFold ---
     skf = StratifiedKFold(n_splits=K, shuffle=True, random_state=GLOBAL_SEED)
     
     # --- 5. 存储每一折的最佳验证指标 ---
     all_folds_best_metrics = [] # 存储每折的最佳 val_metrics 字典
     all_folds_best_epochs = []  # 存储每折达到最佳指标的 epoch
-    
+
+    # --- add：初始保存 K-Fold 配置 ---
+    results_path = os.path.join(main_run_dir, "KFold_TrainingRecord.json")
+    initial_kfold_record = {
+        "model_type": "InjuryPredictModel",
+        "model_params_count": {
+            "total_params": total_params,
+            "trainable_params": trainable_params
+        },
+        "dataset_info": {
+            "total_samples_for_kfold": len(combined_indices),
+            "k_value": K
+        },
+        "hyperparameters": { # 记录使用的超参数
+             "training": {
+                "Epochs": Epochs, "Batch_size": Batch_size, "Learning_rate": Learning_rate,
+                "Learning_rate_min": Learning_rate_min, "weight_decay": weight_decay,
+                "Patience": Patience,
+            },
+            "loss": {
+                "base_loss": base_loss, "weight_factor_classify": weight_factor_classify,
+                "weight_factor_sample": weight_factor_sample, "loss_weights": loss_weights,
+            },
+            "model": {
+                "Ksize_init": Ksize_init, "Ksize_mid": Ksize_mid, "num_blocks_of_tcn": num_blocks_of_tcn,
+                "tcn_channels_list": tcn_channels_list,
+                "num_layers_of_mlpE": num_layers_of_mlpE, "num_layers_of_mlpD": num_layers_of_mlpD,
+                "mlpE_hidden": mlpE_hidden, "mlpD_hidden": mlpD_hidden,
+                "encoder_output_dim": encoder_output_dim, "decoder_output_dim": decoder_output_dim,
+                "dropout_MLP": dropout_MLP, "dropout_TCN": dropout_TCN,
+                "use_channel_attention": use_channel_attention,
+                "fixed_channel_weight": fixed_channel_weight
+            }
+        }
+    }
+    initial_kfold_record = convert_numpy_types(initial_kfold_record)
+    with open(results_path, "w") as f:
+        json.dump(initial_kfold_record, f, indent=4)
+    print(f"K-Fold 初始配置已保存至: {results_path}")
+
     # --- 6. K-Fold 交叉验证主循环 ---
     for fold, (train_k_indices, val_k_indices) in enumerate(skf.split(combined_indices, combined_labels)):
         
@@ -334,7 +406,7 @@ if __name__ == "__main__":
         # --- 6.4 **重新初始化模型、优化器、调度器** ---
         # (确保每折训练的独立性)
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        model = models.TeacherModel(
+        model = models.InjuryPredictModel(
             Ksize_init=Ksize_init, Ksize_mid=Ksize_mid,
             num_classes_of_discrete=num_classes_of_discrete,
             num_blocks_of_tcn=num_blocks_of_tcn, tcn_channels_list=tcn_channels_list,
@@ -353,8 +425,8 @@ if __name__ == "__main__":
             for name, param in model.named_parameters():
                 print(f"  {name}: {param.numel()} parameters")
             print(f"\n模型参数量统计:")
-            total_params = sum(p.numel() for p in model.parameters())
-            trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            # total_params = sum(p.numel() for p in model.parameters())
+            # trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
             print(f"模型总参数量: {total_params}, 可训练参数量: {trainable_params}")
             
         
@@ -363,13 +435,13 @@ if __name__ == "__main__":
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=Epochs, eta_min=Learning_rate_min)
 
         # --- 6.5 初始化当前 Fold 的跟踪变量 ---
-        # (与 train_teacher.py 类似，但用于当前 Fold)
+        # (与 train.py 类似，但用于当前 Fold)
         val_loss_history, val_mais_accu_history = [], []
         best_fold_val_loss = float('inf')
         best_fold_mais_accu = 0
         best_fold_epoch = 0
         
-        # --- 6.6 Epoch 训练循环 (内层循环，与 train_teacher.py 基本一致) ---
+        # --- 6.6 Epoch 训练循环 (内层循环，与 train.py 基本一致) ---
         if Patience > Epochs: current_patience = Epochs
         else: current_patience = Patience
             
@@ -390,7 +462,7 @@ if __name__ == "__main__":
             
             scheduler.step()
 
-            # --- TensorBoard 记录 (与 train_teacher.py 类似) ---
+            # --- TensorBoard 记录 (与 train.py 类似) ---
             # 训练指标
             writer.add_scalar("Loss/Train", train_metrics['loss'], epoch)
             writer.add_scalar("Accuracy_Train/MAIS", train_metrics['accu_mais'], epoch)
@@ -420,7 +492,7 @@ if __name__ == "__main__":
                 torch.save(model.state_dict(), os.path.join(fold_run_dir, "best_mais_accu_model.pth"))
                 print(f"    Best model for Fold {fold+1} saved with Val MAIS Acc: {best_fold_mais_accu:.2f}% at epoch {best_fold_epoch}")
 
-            # --- 早停逻辑 (与 train_teacher.py 类似) ---
+            # --- 早停逻辑 (与 train.py 类似) ---
             if epoch > Epochs * 0.4 and len(val_loss_history) >= current_patience:
                 # 简化：仅基于 MAIS 准确率是否连续 Patience 轮未超过最佳值
                 recent_accu = val_mais_accu_history[-current_patience:]
@@ -433,7 +505,7 @@ if __name__ == "__main__":
         # --- 6.7 当前 Fold 训练结束 ---
         print(f"  Fold {fold+1} 训练完成。正在使用最佳模型 (epoch {best_fold_epoch}) 进行详细评估...")
 
-        # --- 新增：加载最佳模型并执行详细评估 ---
+        # --- 加载最佳模型并执行详细评估 ---
         best_fold_model_path = os.path.join(fold_run_dir, "best_mais_accu_model.pth")
         if os.path.exists(best_fold_model_path):
             # 重新加载最佳权重
@@ -540,76 +612,36 @@ if __name__ == "__main__":
     print("="*60)
     
     # --- 8. 保存 K-Fold 总体结果 ---
-    
-    # --- 类型转换函数 (来自 train_teacher.py) ---
-    def convert_numpy_types(obj):
-        if isinstance(obj, dict):
-            return {key: convert_numpy_types(value) for key, value in obj.items()}
-        elif isinstance(obj, list):
-            return [convert_numpy_types(item) for item in obj]
-        elif isinstance(obj, tuple):
-            return tuple(convert_numpy_types(item) for item in obj)
-        elif isinstance(obj, (np.integer, np.int_)):
-            return int(obj)
-        elif isinstance(obj, (np.floating, np.float_)):
-            return float(obj)
-        elif isinstance(obj, np.ndarray):
-            return obj.tolist()
-        else:
-            return obj
-            
-    kfold_results = {
-        "model_type": "TeacherModel",
-        "model_params": {
-            "total_params": total_params,
-            "trainable_params": trainable_params
-        },
-        "dataset_info": {
-            "total_samples_for_kfold": len(combined_indices),
-            "k_value": K
-        },
-        "hyperparameters": { # 记录使用的超参数
-             "training": {
-                "Epochs": Epochs, "Batch_size": Batch_size, "Learning_rate": Learning_rate,
-                "Learning_rate_min": Learning_rate_min, "weight_decay": weight_decay,
-                "Patience": Patience,
-            },
-            "loss": {
-                "base_loss": base_loss, "weight_factor_classify": weight_factor_classify,
-                "weight_factor_sample": weight_factor_sample, "loss_weights": loss_weights,
-            },
-            "model": {
-                "Ksize_init": Ksize_init, "Ksize_mid": Ksize_mid, "num_blocks_of_tcn": num_blocks_of_tcn,
-                "tcn_channels_list": tcn_channels_list,
-                "num_layers_of_mlpE": num_layers_of_mlpE, "num_layers_of_mlpD": num_layers_of_mlpD,
-                "mlpE_hidden": mlpE_hidden, "mlpD_hidden": mlpD_hidden,
-                "encoder_output_dim": encoder_output_dim, "decoder_output_dim": decoder_output_dim,
-                "dropout_MLP": dropout_MLP, "dropout_TCN": dropout_TCN,
-                "use_channel_attention": use_channel_attention,
-                "fixed_channel_weight": fixed_channel_weight
-            }
-        },
-        "kfold_summary": {
-            "mean_val_loss": mean_loss, "std_val_loss": std_loss,
-            "mean_val_mais_acc": mean_mais_acc, "std_val_mais_acc": std_mais_acc,
-            "mean_val_head_acc": mean_head_acc, "std_val_head_acc": std_head_acc,
-            "mean_val_chest_acc": mean_chest_acc, "std_val_chest_acc": std_chest_acc,
-            "mean_val_neck_acc": mean_neck_acc, "std_val_neck_acc": std_neck_acc,
-            "mean_val_hic_mae": mean_hic_mae, "std_val_hic_mae": std_hic_mae,
-            "mean_val_dmax_mae": mean_dmax_mae, "std_val_dmax_mae": std_dmax_mae,
-            "mean_val_nij_mae": mean_nij_mae, "std_val_nij_mae": std_nij_mae,
-            "mean_best_epoch": np.mean(all_folds_best_epochs)
-        },
-        "per_fold_best_metrics": convert_numpy_types(all_folds_best_metrics), # 记录每折的具体最佳指标
-        "best_epochs_per_fold": all_folds_best_epochs
+    print("K-Fold 训练完成，正在加载初始记录并添加总结...")
+
+    # 1. 准备 K-Fold 总结数据
+    kfold_summary_data = {
+        "mean_val_loss": mean_loss, "std_val_loss": std_loss,
+        "mean_val_mais_acc": mean_mais_acc, "std_val_mais_acc": std_mais_acc,
+        "mean_val_head_acc": mean_head_acc, "std_val_head_acc": std_head_acc,
+        "mean_val_chest_acc": mean_chest_acc, "std_val_chest_acc": std_chest_acc,
+        "mean_val_neck_acc": mean_neck_acc, "std_val_neck_acc": std_neck_acc,
+        "mean_val_hic_mae": mean_hic_mae, "std_val_hic_mae": std_hic_mae,
+        "mean_val_dmax_mae": mean_dmax_mae, "std_val_dmax_mae": std_dmax_mae,
+        "mean_val_nij_mae": mean_nij_mae, "std_val_nij_mae": std_nij_mae,
+        "mean_best_epoch": np.mean(all_folds_best_epochs)
     }
 
-    # 转换所有 NumPy 类型以确保 JSON 兼容性
-    kfold_results = convert_numpy_types(kfold_results)
+    # 2. 加载现有记录
+    try:
+        with open(results_path, "r") as f:
+            final_kfold_record = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        print(f"警告: 未找到或无法解析 {results_path}。将创建一个新的记录文件。")
+        final_kfold_record = initial_kfold_record # Fallback
 
-    # 保存到主运行目录
-    results_path = os.path.join(main_run_dir, "KFold_TrainingRecord.json")
+    # 3. 添加新结果并转换类型
+    final_kfold_record["kfold_summary"] = convert_numpy_types(kfold_summary_data)
+    final_kfold_record["per_fold_best_metrics"] = convert_numpy_types(all_folds_best_metrics)
+    final_kfold_record["best_epochs_per_fold"] = all_folds_best_epochs
+
+    # 4. 覆盖保存
     with open(results_path, "w") as f:
-        json.dump(kfold_results, f, indent=4)
+        json.dump(final_kfold_record, f, indent=4)
         
-    print(f"\nK-Fold 总体结果已保存至: {results_path}")
+    print(f"\nK-Fold 总体结果已更新至: {results_path}")

@@ -173,31 +173,29 @@ if __name__ == "__main__":
     import os
     import numpy as np
     from utils.dataset_prepare import CrashDataset
-    from utils.models import TeacherModel, StudentModel
+    from utils.models import InjuryPredictModel
     from utils.weighted_loss import weighted_loss
+    from config import model_params, loss_params
     
     train_dataset = torch.load(os.path.join("data", "train_dataset.pt"))
 
-    # 定义模型相关的超参数
-    
-    Ksize_init = 8 # TCN 初始卷积核大小，必须是偶数 4-12
-    Ksize_mid = 5  # TCN 中间卷积核大小，必须是奇数 3 or 5
-    num_blocks_of_tcn = 3  # TCN 的块数 2 - 6
-    tcn_channels_list = [64, 128, 256]  # 每个 TCN 块的输出通道数列表
-    num_layers_of_mlpE = 3  # MLP 编码器的层数 4-5
-    num_layers_of_mlpD = 3  # MLP 解码器的层数 4-5
-    mlpE_hidden = 224  # MLP 编码器的隐藏层维度 96 - 192
-    mlpD_hidden = 160  # MLP 解码器的隐藏层维度 128 or 256
-    encoder_output_dim = 96  # 编码器输出特征维度 64 or 96
-    decoder_output_dim = 16  # 解码器输出特征维度 16 or 32 or 64
-    dropout_TCN = 0.15  # TCN Dropout 概率 0.05-0.15
-    dropout_MLP = 0.20  # Dropout 概率 0.05-0.25
-    use_channel_attention=True  # 是否使用注意力机制
-    fixed_channel_weight = [0.6, 0.4, 0]  # 固定的通道注意力权重(None表示自适应学习)
+    # --- 从 config 加载超参数 ---
+    Ksize_init = model_params['Ksize_init']
+    Ksize_mid = model_params['Ksize_mid']
+    num_blocks_of_tcn = model_params['num_blocks_of_tcn']
+    tcn_channels_list = model_params['tcn_channels_list']
+    num_layers_of_mlpE = model_params['num_layers_of_mlpE']
+    num_layers_of_mlpD = model_params['num_layers_of_mlpD']
+    mlpE_hidden = model_params['mlpE_hidden']
+    mlpD_hidden = model_params['mlpD_hidden']
+    encoder_output_dim = model_params['encoder_output_dim']
+    decoder_output_dim = model_params['decoder_output_dim']
+    dropout_TCN = model_params['dropout_TCN']
+    dropout_MLP = model_params['dropout_MLP']
+    use_channel_attention = model_params['use_channel_attention']
+    fixed_channel_weight = model_params['fixed_channel_weight']
 
-    # 将模型移动到CUDA设备
-    # 加载模型
-    model = TeacherModel(
+    model = InjuryPredictModel(
         Ksize_init=Ksize_init,
         Ksize_mid=Ksize_mid,
         num_classes_of_discrete=train_dataset.dataset.num_classes_of_discrete, # --- 修改：从加载的训练集中获取元数据 ---
@@ -214,23 +212,6 @@ if __name__ == "__main__":
         use_channel_attention=use_channel_attention,
         fixed_channel_weight=fixed_channel_weight
     )
-
-    num_layers_of_mlpE = 3  # MLP 编码器的层数
-    num_layers_of_mlpD = 3  # MLP 解码器的层数
-    mlpE_hidden = 224  # MLP 编码器的隐藏层维度
-    mlpD_hidden = 160  # MLP 解码器的隐藏层维度
-    encoder_output_dim = 96  # 编码器输出特征维度
-    decoder_output_dim = 16  # 解码器输出特征维度
-    dropout = 0.15  # Dropout 概率
-
-
-    # model = StudentModel(
-    #     num_classes_of_discrete=dataset.num_classes_of_discrete,
-    #     num_layers_of_mlpE=num_layers_of_mlpE, num_layers_of_mlpD=num_layers_of_mlpD,
-    #     mlpE_hidden=mlpE_hidden, mlpD_hidden=mlpD_hidden,
-    #     encoder_output_dim=encoder_output_dim, decoder_output_dim=decoder_output_dim,
-    #     dropout=dropout
-    # )
 
     # model移动到CUDA
     model = model.cuda()
@@ -249,4 +230,3 @@ if __name__ == "__main__":
     criterion = weighted_loss()
     # 测试模型
     test_model(model, inputs=(x_acc, x_att_con, x_att_dis), labels=y)
-    #test_model(model, inputs=(x_att_con, x_att_dis), labels=y)

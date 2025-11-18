@@ -38,20 +38,13 @@ def test_inference_time(model, loader):
                 # 预热阶段 (仅在第一次迭代时执行)
                 if i == 0:
                     for _ in range(50):
-                        if isinstance(model, models.TeacherModel):
-                            model(batch_x_acc, batch_x_att_continuous, batch_x_att_discrete)
-                        elif isinstance(model, models.StudentModel):
-                            model(batch_x_att_continuous, batch_x_att_discrete)
+                        model(batch_x_acc, batch_x_att_continuous, batch_x_att_discrete)
 
                 # 开始计时
                 torch.cuda.synchronize() # 确保CUDA操作同步
                 start_time = time.time()
 
-                # 前向传播
-                if isinstance(model, models.TeacherModel):
-                    model(batch_x_acc, batch_x_att_continuous, batch_x_att_discrete)
-                elif isinstance(model, models.StudentModel):
-                    model(batch_x_att_continuous, batch_x_att_discrete)
+                model(batch_x_acc, batch_x_att_continuous, batch_x_att_discrete)
 
                 # 结束计时
                 torch.cuda.synchronize() # 确保CUDA操作同步
@@ -63,11 +56,16 @@ def test_inference_time(model, loader):
     print(f"Average inference time per batch: {avg_time:.6f} seconds")
 
 if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="Test Model Inference Time")
-    parser.add_argument("--run_dir", '-r', type=str, required=True, help="Directory of the training run.")
-    parser.add_argument("--weight_file", '-w', type=str, default="best_mais_accu.pth", help="Name of the model weight file.")
-    args = parser.parse_args()
+    # import argparse
+    # parser = argparse.ArgumentParser(description="Test Model Inference Time")
+    # parser.add_argument("--run_dir", '-r', type=str, required=True, help="Directory of the training run.")
+    # parser.add_argument("--weight_file", '-w', type=str, default="best_mais_accu.pth", help="Name of the model weight file.")
+    # args = parser.parse_args()
+    from dataclasses import dataclass
+    @dataclass
+    class args:
+        run_dir: str = r'E:\WPS Office\1628575652\WPS企业云盘\清华大学\我的企业文档\课题组相关\理想项目\LX-model-InjuryPredict\runs\InjuryPredictModel_10261509'
+        weight_file: str = 'final_model.pth'
 
     # 加载超参数和训练记录
     with open(os.path.join(args.run_dir, "TrainingRecord.json"), "r") as f:
@@ -84,18 +82,10 @@ if __name__ == "__main__":
     test_loader = DataLoader(test_dataset, batch_size=128, shuffle=False, num_workers=0)
 
     # --- 根据模型类型加载模型 ---
-    if "teacher" in args.run_dir.lower():
-        model = models.TeacherModel(
+    model = models.InjuryPredictModel(
             num_classes_of_discrete=dataset.num_classes_of_discrete,
             **model_params
         ).to(device)
-    elif "student" in args.run_dir.lower():
-        model = models.StudentModel(
-            num_classes_of_discrete=dataset.num_classes_of_discrete,
-            **model_params
-        ).to(device)
-    else:
-        raise ValueError("Weight file name must contain 'teacher' or 'student' to identify the model type.")
     
     model.load_state_dict(torch.load(os.path.join(args.run_dir, args.weight_file)))
 

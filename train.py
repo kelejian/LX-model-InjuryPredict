@@ -20,6 +20,8 @@ from utils.dataset_prepare import CrashDataset
 from utils.AIS_cal import AIS_cal_head, AIS_cal_chest, AIS_cal_neck 
 from utils.set_random_seed import set_random_seed, GLOBAL_SEED
 
+# --- 从 config.py 导入超参数 ---
+from config import training_params, loss_params, model_params
 set_random_seed()
 
 # --- 合并 train 和 valid 为一个函数 ---
@@ -103,13 +105,30 @@ def run_one_epoch(model, loader, criterion, device, optimizer=None):
     }
     return metrics
 
+def convert_numpy_types(obj):
+        """递归转换NumPy类型为Python原生类型"""
+        if isinstance(obj, dict):
+            return {key: convert_numpy_types(value) for key, value in obj.items()}
+        elif isinstance(obj, list):
+            return [convert_numpy_types(item) for item in obj]
+        elif isinstance(obj, tuple):
+            return tuple(convert_numpy_types(item) for item in obj)
+        elif isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        else:
+            return obj
+        
 if __name__ == "__main__":
-    ''' 训练教师模型 (TCN-based) 以进行多任务损伤预测 '''
+    ''' 训练损伤预测模型 (TCN-based) 以进行多任务损伤预测 '''
     from torch.utils.tensorboard import SummaryWriter
 
     # 创建独立文件夹保存本次运行结果
     current_time = datetime.now().strftime("%m%d%H%M")
-    run_dir = os.path.join("./runs", f"TeacherModel_{current_time}")
+    run_dir = os.path.join("./runs", f"InjuryPredictModel_{current_time}")
     os.makedirs(run_dir, exist_ok=True)
 
     # 初始化 TensorBoard
@@ -117,44 +136,41 @@ if __name__ == "__main__":
     
     ############################################################################################
     ############################################################################################
-    # 定义所有可调超参数
+    # --- 从导入的配置中加载超参数 ---
     # 1. 优化与训练相关
-    Epochs = 360
-    Batch_size = 512
-    Learning_rate = 0.025
-    Learning_rate_min = 1e-6
-    weight_decay = 6e-4
-    Patience = 1000 # 早停轮数
+    Epochs = training_params['Epochs']
+    Batch_size = training_params['Batch_size']
+    Learning_rate = training_params['Learning_rate']
+    Learning_rate_min = training_params['Learning_rate_min']
+    weight_decay = training_params['weight_decay']
+    Patience = training_params['Patience']
     
     # 2. 损失函数相关
-    base_loss = "mae"
-    weight_factor_classify = 1.2
-    weight_factor_sample = 1.0
-    loss_weights = (0.3, 1.0, 25.0) # HIC, Dmax, Nij 各自损失的权重
+    base_loss = loss_params['base_loss']
+    weight_factor_classify = loss_params['weight_factor_classify']
+    weight_factor_sample = loss_params['weight_factor_sample']
+    loss_weights = loss_params['loss_weights']
 
     # 3. 模型结构相关
-    Ksize_init = 8
-    Ksize_mid = 3
-    num_blocks_of_tcn = 4
-    tcn_channels_list = [64, 96, 128, 160]  # 每个 TCN 块的输出通道数
-    num_layers_of_mlpE = 3
-    num_layers_of_mlpD = 3
-    mlpE_hidden = 192
-    mlpD_hidden = 160
-    encoder_output_dim = 128
-    decoder_output_dim = 64
-    dropout_MLP = 0.1
-    dropout_TCN = 0.05
-    use_channel_attention = True  # 是否使用通道注意力机制
-    fixed_channel_weight = [0.7, 0.3, 0]  # 固定的通道注意力权重(None表示自适应学习)
+    Ksize_init = model_params['Ksize_init']
+    Ksize_mid = model_params['Ksize_mid']
+    num_blocks_of_tcn = model_params['num_blocks_of_tcn']
+    tcn_channels_list = model_params['tcn_channels_list']
+    num_layers_of_mlpE = model_params['num_layers_of_mlpE']
+    num_layers_of_mlpD = model_params['num_layers_of_mlpD']
+    mlpE_hidden = model_params['mlpE_hidden']
+    mlpD_hidden = model_params['mlpD_hidden']
+    encoder_output_dim = model_params['encoder_output_dim']
+    decoder_output_dim = model_params['decoder_output_dim']
+    dropout_MLP = model_params['dropout_MLP']
+    dropout_TCN = model_params['dropout_TCN']
+    use_channel_attention = model_params['use_channel_attention'] # 是否使用通道注意力机制
+    fixed_channel_weight = model_params['fixed_channel_weight'] # 固定的通道注意力权重(None表示自适应学习)
     ############################################################################################
     ############################################################################################
-
     if Patience > Epochs: Patience = Epochs
 
-    # --- 修改：不再创建未处理的CrashDataset实例，直接加载已处理的数据集 ---
     # 加载数据集对象
-    # dataset = CrashDataset()
     train_dataset = torch.load("./data/train_dataset.pt")
     val_dataset = torch.load("./data/val_dataset.pt")
     train_loader = DataLoader(train_dataset, batch_size=Batch_size, shuffle=True, num_workers=0)
@@ -163,11 +179,10 @@ if __name__ == "__main__":
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # 加载模型
-    model = models.TeacherModel(
+    model = models.InjuryPredictModel(
         Ksize_init=Ksize_init,
         Ksize_mid=Ksize_mid,
-        num_classes_of_discrete=train_dataset.dataset.num_classes_of_discrete, # --- 修改：从加载的训练集中获取元数据 ---
-        num_blocks_of_tcn=num_blocks_of_tcn,
+        num_classes_of_discrete=train_dataset.dataset.num_classes_of_discrete, # 从加载的训练集中获取元数据
         tcn_channels_list=tcn_channels_list,
         num_layers_of_mlpE=num_layers_of_mlpE,
         num_layers_of_mlpD=num_layers_of_mlpD,
@@ -181,6 +196,12 @@ if __name__ == "__main__":
         fixed_channel_weight=fixed_channel_weight
     ).to(device)
 
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    # 打印模型结构和参数信息
+    print(model)
+    print(f"模型总参数量: {total_params}, 可训练参数量: {trainable_params}")
+
     criterion = weighted_loss(base_loss, weight_factor_classify, weight_factor_sample, loss_weights)
     optimizer = optim.AdamW(model.parameters(), lr=Learning_rate, weight_decay=weight_decay)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=Epochs, eta_min=Learning_rate_min)
@@ -191,6 +212,44 @@ if __name__ == "__main__":
     Best_mais_accu, Best_chest_accu, Best_head_accu, Best_neck_accu = 0, 0, 0, 0
     Best_dmax_mae, Best_hic_mae, Best_nij_mae = float('inf'), float('inf'), float('inf')
     best_loss_epoch, best_MAIS_accu_epoch, best_dmax_epoch, best_nij_epoch, best_chest_epoch, best_hic_epoch, best_head_epoch, best_neck_epoch = 0, 0, 0, 0, 0, 0, 0, 0
+
+    # 保存初始配置到 JSON 文件
+    record_path = os.path.join(run_dir, "TrainingRecord.json")
+    initial_record = {
+        'GLOBAL_SEED': GLOBAL_SEED,
+        "Trainset_size": len(train_dataset),
+        "Valset_size": len(val_dataset),
+        "model_params_count": {
+            "total_params": total_params,
+            "trainable_params": trainable_params
+        },
+        "hyperparameters": {
+            "training": {
+                "Epochs": Epochs, "Batch_size": Batch_size, "Learning_rate": Learning_rate,
+                "Learning_rate_min": Learning_rate_min, "weight_decay": weight_decay,
+                "Patience": Patience,
+            },
+            "loss": {
+                "base_loss": base_loss, "weight_factor_classify": weight_factor_classify,
+                "weight_factor_sample": weight_factor_sample, "loss_weights": loss_weights,
+            },
+            "model": {
+                "Ksize_init": Ksize_init, "Ksize_mid": Ksize_mid, "num_blocks_of_tcn": num_blocks_of_tcn,
+                "tcn_channels_list": tcn_channels_list,
+                "num_layers_of_mlpE": num_layers_of_mlpE, "num_layers_of_mlpD": num_layers_of_mlpD,
+                "mlpE_hidden": mlpE_hidden, "mlpD_hidden": mlpD_hidden,
+                "encoder_output_dim": encoder_output_dim, "decoder_output_dim": decoder_output_dim,
+                "dropout_MLP": dropout_MLP, "dropout_TCN": dropout_TCN,
+                "use_channel_attention": use_channel_attention,
+                "fixed_channel_weight": fixed_channel_weight
+            }
+        }
+    }
+    # 转换Numpy类型并保存
+    initial_record = convert_numpy_types(initial_record)
+    with open(record_path, "w") as f:
+        json.dump(initial_record, f, indent=4)
+    print(f"初始配置已保存至: {record_path}")
 
     # 主训练循环
     for epoch in range(Epochs):
@@ -367,85 +426,56 @@ if __name__ == "__main__":
 
     writer.close()
 
-    # --- 类型转换函数 ---
-    def convert_numpy_types(obj):
-        """递归转换NumPy类型为Python原生类型"""
-        if isinstance(obj, dict):
-            return {key: convert_numpy_types(value) for key, value in obj.items()}
-        elif isinstance(obj, list):
-            return [convert_numpy_types(item) for item in obj]
-        elif isinstance(obj, tuple):
-            return tuple(convert_numpy_types(item) for item in obj)
-        elif isinstance(obj, np.integer):
-            return int(obj)
-        elif isinstance(obj, np.floating):
-            return float(obj)
-        elif isinstance(obj, np.ndarray):
-            return obj.tolist()
-        else:
-            return obj
+    # --- 最终记录训练结果 (加载、更新、保存) ---
+    print("训练完成，正在加载初始记录并添加训练结果...")
+    
+    # 1. 定义训练结果
+    training_results = {
+        "final_epoch": epoch + 1,
+        "best_mais_accuracy": np.round(float(Best_mais_accu), 2),
+        "best_mais_accuracy_epoch": int(best_MAIS_accu_epoch),
+        "best_chest_accuracy": np.round(float(Best_chest_accu), 2),
+        "best_chest_accuracy_epoch": int(best_chest_epoch),
+        "best_head_accuracy": np.round(float(Best_head_accu), 2),
+        "best_head_accuracy_epoch": int(best_head_epoch),
+        "best_neck_accuracy": np.round(float(Best_neck_accu), 2),
+        "best_neck_accuracy_epoch": int(best_neck_epoch),
+        "best_dmax_mae": np.round(float(Best_dmax_mae), 2),
+        "best_dmax_mae_epoch": int(best_dmax_epoch),
+        "best_hic_mae": np.round(float(Best_hic_mae), 2),
+        "best_hic_mae_epoch": int(best_hic_epoch),
+        "best_nij_mae": np.round(float(Best_nij_mae), 3),
+        "best_nij_mae_epoch": int(best_nij_epoch),
 
-    # --- 完整记录超参数和最终结果 ---
-    results = {
-        'GLOBAL_SEED': GLOBAL_SEED,
-        "Trainset_size": len(train_dataset),
-        "Valset_size": len(val_dataset),
-        "hyperparameters": {
-            "training": {
-                "Epochs": Epochs, "Batch_size": Batch_size, "Learning_rate": Learning_rate,
-                "Learning_rate_min": Learning_rate_min, "weight_decay": weight_decay,
-                "Patience": Patience,
-            },
-            "loss": {
-                "base_loss": base_loss, "weight_factor_classify": weight_factor_classify,
-                "weight_factor_sample": weight_factor_sample, "loss_weights": loss_weights,
-            },
-            "model": {
-                "Ksize_init": Ksize_init, "Ksize_mid": Ksize_mid, "num_blocks_of_tcn": num_blocks_of_tcn,
-                "tcn_channels_list": tcn_channels_list,
-                "num_layers_of_mlpE": num_layers_of_mlpE, "num_layers_of_mlpD": num_layers_of_mlpD,
-                "mlpE_hidden": mlpE_hidden, "mlpD_hidden": mlpD_hidden,
-                "encoder_output_dim": encoder_output_dim, "decoder_output_dim": decoder_output_dim,
-                "dropout_MLP": dropout_MLP, "dropout_TCN": dropout_TCN,
-                "use_channel_attention": use_channel_attention,
-                "fixed_channel_weight": fixed_channel_weight
-            }
-        },
-        "results": {
-            "final_epoch": epoch + 1,
-            "best_mais_accuracy": np.round(float(Best_mais_accu), 2),
-            "best_mais_accuracy_epoch": int(best_MAIS_accu_epoch),
-            "best_chest_accuracy": np.round(float(Best_chest_accu), 2),
-            "best_chest_accuracy_epoch": int(best_chest_epoch),
-            "best_head_accuracy": np.round(float(Best_head_accu), 2),
-            "best_head_accuracy_epoch": int(best_head_epoch),
-            "best_neck_accuracy": np.round(float(Best_neck_accu), 2),
-            "best_neck_accuracy_epoch": int(best_neck_epoch),
-            "best_dmax_mae": np.round(float(Best_dmax_mae), 2),
-            "best_dmax_mae_epoch": int(best_dmax_epoch),
-            "best_hic_mae": np.round(float(Best_hic_mae), 2),
-            "best_hic_mae_epoch": int(best_hic_epoch),
-            "best_nij_mae": np.round(float(Best_nij_mae), 3),
-            "best_nij_mae_epoch": int(best_nij_epoch),
+        "lowest_val_loss": np.round(float(Best_val_loss), 3),
+        "lowest_val_loss_epoch": int(best_loss_epoch),
 
-            "lowest_val_loss": np.round(float(Best_val_loss), 3),
-            "lowest_val_loss_epoch": int(best_loss_epoch),
-
-            "last_epoch_metrics": {
-                "val_loss": np.round(float(val_metrics['loss']), 3),
-                "accu_mais": np.round(float(val_metrics['accu_mais']), 2),
-                "accu_head": np.round(float(val_metrics['accu_head']), 2),
-                "accu_chest": np.round(float(val_metrics['accu_chest']), 2),
-                "accu_neck": np.round(float(val_metrics['accu_neck']), 2),
-                "mae_hic": np.round(float(val_metrics['mae_hic']), 2),
-                "mae_dmax": np.round(float(val_metrics['mae_dmax']), 2),
-                "mae_nij": np.round(float(val_metrics['mae_nij']), 3),
-            }
+        "last_epoch_metrics": {
+            "val_loss": np.round(float(val_metrics['loss']), 3),
+            "accu_mais": np.round(float(val_metrics['accu_mais']), 2),
+            "accu_head": np.round(float(val_metrics['accu_head']), 2),
+            "accu_chest": np.round(float(val_metrics['accu_chest']), 2),
+            "accu_neck": np.round(float(val_metrics['accu_neck']), 2),
+            "mae_hic": np.round(float(val_metrics['mae_hic']), 2),
+            "mae_dmax": np.round(float(val_metrics['mae_dmax']), 2),
+            "mae_nij": np.round(float(val_metrics['mae_nij']), 3),
         }
     }
+    
+    # 2. 加载现有记录
+    try:
+        with open(record_path, "r") as f:
+            final_record = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        print(f"警告: 未找到或无法解析 {record_path}。将创建一个新的记录文件。")
+        # 从 initial_record 重新构建，以防万一
+        final_record = initial_record 
 
-    # 转换所有NumPy类型
-    results = convert_numpy_types(results)
-
-    with open(os.path.join(run_dir, "TrainingRecord.json"), "w") as f:
-        json.dump(results, f, indent=4)
+    # 3. 添加新结果并转换类型
+    final_record['results'] = convert_numpy_types(training_results)
+    
+    # 4. 覆盖保存
+    with open(record_path, "w") as f:
+        json.dump(final_record, f, indent=4)
+    
+    print(f"训练结果已更新至: {record_path}")

@@ -20,7 +20,7 @@ class TemporalBlock(nn.Module):
 
         self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size, stride=1, padding=padding)
         self.bn1 = nn.BatchNorm1d(out_channels)
-        self.relu = nn.ReLU(inplace=True)
+        self.relu = nn.LeakyReLU(inplace=True)
         self.dropout = nn.Dropout(dropout)
         self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size, stride=1, padding=padding)
         self.bn2 = nn.BatchNorm1d(out_channels)
@@ -119,7 +119,7 @@ class TemporalConvNet(nn.Module):
                  dropout=0.1, hidden=128, use_channel_attention=True, fixed_channel_weight=None,
                  use_attention_pooling=True):
         """
-        教师模型一部分, 负责提取X,Y加速度曲线特征(x_acc), 作为encoder一部分
+        损伤预测模型一部分, 负责提取X,Y加速度曲线特征(x_acc), 作为encoder一部分
         Args:
             use_attention_pooling (bool): 是否使用注意力池化替代全局平均池化。
         """
@@ -148,7 +148,7 @@ class TemporalConvNet(nn.Module):
         self.initial_conv = nn.Sequential(
             nn.Conv1d(in_channels, tcn_channels_list[0], kernel_size=kernel_sizes[0], stride=2, padding=padding_init),  # 下采样
             nn.BatchNorm1d(tcn_channels_list[0]),
-            nn.ReLU(),
+            nn.LeakyReLU(),
         )
 
         # 堆叠 TemporalBlock
@@ -197,7 +197,7 @@ class TemporalConvNet(nn.Module):
             self.attention_mlp = nn.Sequential(
                 nn.Conv1d(in_channels=C_out, out_channels=C_hidden_attn, kernel_size=1, bias=False),
                 nn.BatchNorm1d(C_hidden_attn),
-                nn.ReLU(inplace=True),
+                nn.LeakyReLU(inplace=True),
                 nn.Dropout(dropout), # 添加 Dropout
                 nn.Conv1d(in_channels=C_hidden_attn, out_channels=1, kernel_size=1, bias=True)
             )
@@ -275,7 +275,7 @@ class TemporalConvNet(nn.Module):
         return x
 class DiscreteFeatureEmbedding(nn.Module):
     """
-    对离散特征进行嵌入处理, 用于教师模型和学生模型的encoder
+    对离散特征进行嵌入处理, 用于损伤预测模型的encoder
     输入: x_att_discrete (离散特征), num_classes_of_discrete (每个离散特征的类别数)
     输出: 嵌入后的特征向量 (concat 所有离散特征的嵌入向量)
     """
@@ -315,7 +315,7 @@ class DiscreteFeatureEmbedding(nn.Module):
         output = torch.cat(embedded_features, dim=1)
         return output
 
-class TeacherModel(nn.Module):
+class InjuryPredictModel(nn.Module):
     def __init__(self, num_classes_of_discrete, 
                  Ksize_init=6, Ksize_mid=3,
                  num_blocks_of_tcn=4,
@@ -326,7 +326,8 @@ class TeacherModel(nn.Module):
                  dropout_MLP=0.2, dropout_TCN=0.15, 
                  use_channel_attention=True, fixed_channel_weight=None):
         """
-        TeacherModel 的初始化。
+        损伤预测模型初始化。
+        (原教师模型输入输出架构)
 
         参数:
             num_classes_of_discrete (list): 每个离散特征的类别数。
@@ -344,7 +345,7 @@ class TeacherModel(nn.Module):
             dropout_TCN (float): TCN模块的Dropout 概率。
             use_channel_attention (bool): 是否使用通道注意力机制。
         """
-        super(TeacherModel, self).__init__()
+        super(InjuryPredictModel, self).__init__()
 
         # 离散特征嵌入层
         self.discrete_embedding = DiscreteFeatureEmbedding(num_classes_of_discrete)
@@ -388,7 +389,7 @@ class TeacherModel(nn.Module):
             out_channels=encoder_output_dim  // 2, # 输出特征维度
             num_layers=num_layers_of_mlpE, # 隐层个数为num_layers-2
             norm="batch_norm",
-            act="relu",
+            act="leaky_relu",
             act_first=False, # 先归一化再激活
             plain_last=True, # 最后一层不应用非线性激活、批归一化和 dropout
             dropout=dropout_MLP
@@ -406,7 +407,7 @@ class TeacherModel(nn.Module):
             out_channels=decoder_output_dim, # 输出特征维度
             num_layers=num_layers_of_mlpD, # 隐层个数为num_layers-2
             norm="batch_norm",
-            act="relu",
+            act="leaky_relu",
             act_first=False, # 先归一化再激活
             plain_last=True, # 最后一层不应用非线性激活、批归一化和 dropout
             dropout=dropout_MLP
@@ -476,100 +477,5 @@ class TeacherModel(nn.Module):
         Dmax_pred = self.Dmax_head(regression_input)  # (B, 1)
         Nij_pred = self.Nij_head(regression_input)  # (B, 1)
         predictions = torch.cat([HIC_pred, Dmax_pred, Nij_pred], dim=1)  # (B, 3)
-
-        return predictions, encoder_output, decoder_output
-
-class StudentModel(nn.Module):
-    def __init__(self, num_classes_of_discrete, 
-                 num_layers_of_mlpE=4, num_layers_of_mlpD=4, 
-                 mlpE_hidden=128, mlpD_hidden=96, 
-                 encoder_output_dim=128, decoder_output_dim=16, 
-                 dropout=0.1):
-        """
-        学生模型的初始化。
-
-        参数:
-            num_classes_of_discrete (list): 每个离散特征的类别数。
-            num_layers_of_mlpE (int): MLP 编码器的层数。
-            num_layers_of_mlpD (int): MLP 解码器的层数。
-            mlpE_hidden (int): MLP 编码器的隐藏层维度。
-            mlpD_hidden (int): MLP 解码器的隐藏层维度。
-            encoder_output_dim (int): 编码器的输出特征维度。需与教师模型一致。
-            decoder_output_dim (int): 解码器的输出特征维度。需与教师模型一致。
-            dropout (float): Dropout 概率。
-        """
-        super(StudentModel, self).__init__()
-
-        # 离散特征嵌入层
-        self.discrete_embedding = DiscreteFeatureEmbedding(num_classes_of_discrete)
-
-        # MLP 编码器，处理连续特征和离散特征的嵌入
-        if num_layers_of_mlpE < 2:
-            raise ValueError("num_layers_of_mlpE 必须大于等于 2")
-        ###################################
-        mlp_encoder_input_dim = 14 + sum(num_classes_of_discrete) - len(num_classes_of_discrete)  # 连续特征 + 离散特征嵌入(14个连续特征 + 离散特征嵌入)
-        ###################################
-        self.mlp_encoder = PygMLP(
-            in_channels=mlp_encoder_input_dim, 
-            hidden_channels=mlpE_hidden,
-            out_channels=encoder_output_dim,  # 输出特征维度与教师模型一致
-            num_layers=num_layers_of_mlpE, 
-            norm="batch_norm",
-            act="relu",
-            act_first=False, 
-            plain_last=True, 
-            dropout=dropout
-        )        
-        
-        self.bn1 = nn.BatchNorm1d(encoder_output_dim  + mlp_encoder_input_dim) # 归一化解码器输入特征
-        self.leaky_relu1 = nn.LeakyReLU()
-
-        # MLP 解码器，解码出最终特征
-        if num_layers_of_mlpD < 2:
-            raise ValueError("num_layers_of_mlpD 必须大于等于 2")
-        self.mlp_decoder = PygMLP(
-            in_channels=encoder_output_dim + mlp_encoder_input_dim,  # 复用特征
-            hidden_channels=mlpD_hidden,
-            out_channels=decoder_output_dim,  # 输出特征维度与教师模型一致
-            num_layers=num_layers_of_mlpD, 
-            norm="batch_norm",
-            act="relu",
-            act_first=False, 
-            plain_last=True, # 最后一层不应用非线性激活、批归一化和 dropout
-            dropout=dropout
-        )
-
-        self.bn2 = nn.BatchNorm1d(decoder_output_dim) # 归一化解码器输出特征
-        self.leaky_relu2 = nn.LeakyReLU()
-        self.fc = nn.Linear(decoder_output_dim, 3)  # 输出 HIC, Dmax, Nij 预测值
-        
-    def forward(self, x_att_continuous, x_att_discrete):
-        """
-        参数:
-            x_att_continuous (torch.Tensor): 连续特征，形状为 (B, 14)。
-            x_att_discrete (torch.Tensor): 离散特征，形状为 (B, 4)。
-
-        返回:
-            predictions: 预测的 HIC, Dmax, Nij 值，形状为 (B, 3)。
-            encoder_output: 编码器的输出，形状为 (B, encoder_output_dim)。
-            decoder_output: 解码器的输出，形状为 (B, decoder_output_dim)。
-        """
-        # 1. 处理离散特征
-        x_discrete_embedded = self.discrete_embedding(x_att_discrete)  # (B, sum(num_classes_of_discrete) - len(num_classes_of_discrete))
-
-        # 2. 处理连续特征和离散特征的嵌入
-        x_features = torch.cat([x_att_continuous, x_discrete_embedded], dim=1)  # (B, 14 + sum(num_classes_of_discrete) - len(num_classes_of_discrete))
-        encoder_output = self.mlp_encoder(x_features)  # (B, encoder_output_dim)
-
-        # 3. 解码器输出
-        decoder_input = torch.cat([encoder_output, x_features], dim=1)  # (B, encoder_output_dim + 14 + sum(num_classes_of_discrete) - len(num_classes_of_discrete))
-        decoder_input = self.bn1(decoder_input)
-        decoder_input = self.leaky_relu1(decoder_input)
-        decoder_output = self.mlp_decoder(decoder_input)  # (B, decoder_output_dim)
-
-        # 4. 预测 HIC 值
-        regression_input = self.bn2(decoder_output)
-        regression_input = self.leaky_relu2(regression_input)
-        predictions = self.fc(regression_input)  # (B, 3)
 
         return predictions, encoder_output, decoder_output

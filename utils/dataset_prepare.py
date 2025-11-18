@@ -1,4 +1,11 @@
-''' This module includes data precessing dataset creating. '''
+'''
+描述：数据集处理准备的模块函数
+功能包括：
+1. 定义数据集类 CrashDataset，用于加载和存储原始及处理后的碰撞数据。
+2. 定义数据处理类 DataProcessor，封装数据预处理逻辑，包括拟合(fit)、转换(transform)和结果展示。
+3. 定义数据集划分函数 split_data，用于将数据集划分为训练集、验证集和测试集，支持特殊案例的强制分配。
+作用：输出预处理后的数据集实例（.pt文件）和数据处理器实例（.joblib文件），便于后续模型训练和评估使用。
+'''
 import warnings
 warnings.filterwarnings("ignore")
 import torch

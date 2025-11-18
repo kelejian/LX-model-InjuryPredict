@@ -49,11 +49,7 @@ def test(model, loader):
              batch_y_HIC, batch_y_Dmax, batch_y_Nij,
              batch_ais_head, batch_ais_chest, batch_ais_neck, batch_y_MAIS) = [d.to(device) for d in batch]
             
-            # 前向传播
-            if isinstance(model, models.TeacherModel):
-                batch_pred, _, _ = model(batch_x_acc, batch_x_att_continuous, batch_x_att_discrete)
-            elif isinstance(model, models.StudentModel):
-                batch_pred, _, _ = model(batch_x_att_continuous, batch_x_att_discrete)
+            batch_pred, _, _ = model(batch_x_acc, batch_x_att_continuous, batch_x_att_discrete)
 
             # 收集回归和分类的标签
             batch_y_true = torch.stack([batch_y_HIC, batch_y_Dmax, batch_y_Nij], dim=1)
@@ -187,9 +183,8 @@ if __name__ == "__main__":
     from dataclasses import dataclass
     @dataclass
     class args:
-        run_dir: str = r'E:\WPS Office\1628575652\WPS企业云盘\清华大学\我的企业文档\课题组相关\理想项目\DL_project_InjuryPredict\runs\TeacherModel_10261509'
+        run_dir: str = r'E:\WPS Office\1628575652\WPS企业云盘\清华大学\我的企业文档\课题组相关\理想项目\LX-model-InjuryPredict\runs\InjuryPredictModel_10261509'
         weight_file: str = 'final_model.pth'
-
 
     # --- 1. 加载模型和数据 ---
     with open(os.path.join(args.run_dir, "TrainingRecord.json"), "r") as f:
@@ -203,12 +198,8 @@ if __name__ == "__main__":
     test_dataset = ConcatDataset([test_dataset1, test_dataset2])
     test_loader = DataLoader(test_dataset, batch_size=128, shuffle=False, num_workers=0)
 
-    if "teacher" in args.run_dir.lower():
-        model = models.TeacherModel(**model_params, num_classes_of_discrete=train_dataset.dataset.num_classes_of_discrete).to(device)
-    elif "student" in args.run_dir.lower():
-        model = models.StudentModel(**model_params, num_classes_of_discrete=train_dataset.dataset.num_classes_of_discrete).to(device)
-    else:
-        raise ValueError("run_dir name must contain 'teacher' or 'student'.")
+    print(f"加载 InjuryPredictModel 架构 (来自 {args.run_dir})")
+    model = models.InjuryPredictModel(**model_params, num_classes_of_discrete=train_dataset.dataset.num_classes_of_discrete).to(device)
     
     model.load_state_dict(torch.load(os.path.join(args.run_dir, args.weight_file)))
 
@@ -264,7 +255,6 @@ if __name__ == "__main__":
 ## Model Identification
 - **Run Directory**: `{args.run_dir}`
 - **Weight File**: `{args.weight_file}`
-- **Model Type**: {"Teacher" if "teacher" in args.run_dir.lower() else "Student"}
 - **Total Parameters**: {total_params}
 - **Trainset size**: {len(train_dataset)}
 - **Testset size**: {len(test_dataset)}

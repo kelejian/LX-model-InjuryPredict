@@ -20,7 +20,7 @@ from utils.set_random_seed import set_random_seed
 
 set_random_seed()
 
-# 沿用 train_teacher.py 中标准化的单轮训练/验证函数
+# 沿用 train.py 中标准化的单轮训练/验证函数
 def run_one_epoch(model, loader, criterion, device, optimizer=None):
     """
     执行一个完整的训练或验证周期。
@@ -140,7 +140,7 @@ def objective(trial):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # 构建模型
-    model = models.TeacherModel(
+    model = models.InjuryPredictModel(
         num_classes_of_discrete=train_dataset.dataset.num_classes_of_discrete,
         Ksize_init=Ksize_init, Ksize_mid=Ksize_mid,
         # num_blocks_of_tcn=num_blocks_of_tcn,
@@ -181,8 +181,8 @@ def objective(trial):
 
 if __name__ == "__main__":
 
-    study_file = "./runs/optuna_study_teacher_multiobj_acc.pkl"
-    study_name = "teacher_model_multiobj_acc_optimization_1023_3"
+    study_file = "./runs/optuna_study_multiobj_acc.pkl"
+    study_name = "multiobj_acc_optimization"
     db_path = "sqlite:///./runs/optuna_study.db"
     storage = RDBStorage(db_path)
 
