@@ -5,13 +5,7 @@
 3. 支持前向传播、反向传播、损失计算。
 4. 导出 ONNX 模型并验证。
 5. 输出模型详细信息。
-参数：
-- model: PyTorch 模型实例化对象: torch.nn.Module
-- inputs: 模型的输入张量: tensor 或 tulple(tensor1, tensor2, ...) 或 list(tensor1, tensor2, ...)
-- labels: 模型的真实标签张量（用于损失计算）: tensor
-- criterion: 损失函数实例化对象，默认为 nn.MSELoss
-- optimizer: 优化器实例化对象，默认为 Adam
-- onnx_file_path: 导出的 ONNX 文件路径
+6. 计算 FLOPS 和推理速度（用于评估算力需求）。
 """
 import warnings
 warnings.filterwarnings('ignore')
@@ -20,15 +14,253 @@ import torch.nn as nn
 import torch.onnx
 from torchinfo import summary
 from torchviz import make_dot
+import time
 
-# @profile
+
+# ==========================================================================================
+# 自定义 FLOPs 计算 Hooks (用于 ptflops 不默认支持的操作)
+# ==========================================================================================
+
+def gru_flops_counter_hook(module, input, output):
+    """
+    GRU 的 FLOPs 计算 Hook
+    
+    GRU 每个时间步的计算量:
+    - 3个门 (reset, update, new): 每个门需要 2 * (input_size + hidden_size) * hidden_size 次乘加
+    - 总计: 6 * (input_size + hidden_size) * hidden_size 次乘加 (MACs)
+    - 双向: 再乘以 2
+    - 多层: 第一层 input_size 为原始输入，后续层为 hidden_size * num_directions
+    """
+    input_tensor = input[0]
+    batch_size = input_tensor.size(0)
+    seq_len = input_tensor.size(1)
+    input_size = module.input_size
+    hidden_size = module.hidden_size
+    num_layers = module.num_layers
+    bidirectional = module.bidirectional
+    num_directions = 2 if bidirectional else 1
+    
+    total_macs = 0
+    
+    for layer in range(num_layers):
+        layer_input_size = input_size if layer == 0 else hidden_size * num_directions
+        macs_per_step = 3 * 2 * (layer_input_size + hidden_size) * hidden_size
+        layer_macs = macs_per_step * seq_len * batch_size
+        layer_macs *= num_directions
+        total_macs += layer_macs
+    
+    module.__flops__ += int(total_macs)
+
+
+def lstm_flops_counter_hook(module, input, output):
+    """
+    LSTM 的 FLOPs 计算 Hook
+    
+    LSTM 每个时间步的计算量:
+    - 4个门 (input, forget, cell, output): 每个门需要 2 * (input_size + hidden_size) * hidden_size 次乘加
+    - 总计: 8 * (input_size + hidden_size) * hidden_size 次乘加 (MACs)
+    """
+    input_tensor = input[0]
+    batch_size = input_tensor.size(0)
+    seq_len = input_tensor.size(1)
+    input_size = module.input_size
+    hidden_size = module.hidden_size
+    num_layers = module.num_layers
+    bidirectional = module.bidirectional
+    num_directions = 2 if bidirectional else 1
+    
+    total_macs = 0
+    
+    for layer in range(num_layers):
+        layer_input_size = input_size if layer == 0 else hidden_size * num_directions
+        macs_per_step = 4 * 2 * (layer_input_size + hidden_size) * hidden_size
+        layer_macs = macs_per_step * seq_len * batch_size
+        layer_macs *= num_directions
+        total_macs += layer_macs
+    
+    module.__flops__ += int(total_macs)
+
+
+def embedding_flops_counter_hook(module, input, output):
+    """
+    Embedding 的 FLOPs 计算 Hook
+    
+    Embedding 仅进行查表操作，理论上没有浮点运算
+    """
+    module.__flops__ += 0
+
+
+def calculate_flops_with_ptflops(model, input_data, device, print_per_layer=False):
+    """
+    使用 ptflops 计算模型的 FLOPs
+    
+    参数:
+        model: PyTorch 模型
+        input_data: 输入数据 (tuple 或 tensor)
+        device: 计算设备
+        print_per_layer: 是否打印每层的 FLOPs 详情
+    
+    返回:
+        dict: 包含 FLOPs、MACs、参数量等信息的字典
+    """
+    try:
+        from ptflops import get_model_complexity_info
+    except ImportError:
+        print("   ⚠️  ptflops 未安装，请运行: pip install ptflops")
+        return {
+            'macs': 0,
+            'flops': 0,
+            'params': sum(p.numel() for p in model.parameters()),
+            'success': False,
+            'error': 'ptflops not installed'
+        }
+    
+    # 获取输入形状 (不包含 batch 维度)
+    if isinstance(input_data, (tuple, list)):
+        # 多输入情况，取第一个输入的形状
+        input_shape = tuple(input_data[0].shape[1:])
+    else:
+        input_shape = tuple(input_data.shape[1:])
+    
+    # 创建自定义 hooks 字典
+    custom_hooks = {
+        nn.GRU: gru_flops_counter_hook,
+        nn.LSTM: lstm_flops_counter_hook,
+        nn.Embedding: embedding_flops_counter_hook,
+    }
+    
+    # 定义输入构造函数（处理多输入情况）
+    def input_constructor(input_res):
+        if isinstance(input_data, (tuple, list)):
+            # 返回与原始输入相同结构的数据
+            return tuple(
+                torch.randn(1, *inp.shape[1:]).to(device) if inp.dtype.is_floating_point 
+                else torch.zeros(1, *inp.shape[1:], dtype=inp.dtype).to(device)
+                for inp in input_data
+            )
+        else:
+            return torch.randn(1, *input_res).to(device)
+    
+    model.eval()
+    
+    try:
+        macs, params = get_model_complexity_info(
+            model, 
+            input_shape,
+            input_constructor=input_constructor,
+            as_strings=False,
+            print_per_layer_stat=print_per_layer,
+            verbose=print_per_layer,
+            custom_modules_hooks=custom_hooks,
+        )
+        
+        # MACs to FLOPs: 1 MAC ≈ 2 FLOPs
+        flops = macs * 2
+        
+        return {
+            'macs': macs,
+            'flops': flops,
+            'params': params,
+            'success': True
+        }
+        
+    except Exception as e:
+        print(f"   ⚠️  ptflops 计算失败: {e}")
+        return {
+            'macs': 0,
+            'flops': 0,
+            'params': sum(p.numel() for p in model.parameters()),
+            'success': False,
+            'error': str(e)
+        }
+
+
+def print_flops_analysis(flops_info, batch_size=1):
+    """
+    打印 FLOPs 分析结果和指标解释
+    """
+    macs = flops_info['macs']
+    flops = flops_info['flops']
+    params = flops_info['params']
+    
+    print("\n   " + "─" * 60)
+    print("   📊 核心指标")
+    print("   " + "─" * 60)
+    
+    # 参数量
+    print(f"   参数量 (Params)      : {params:>15,} ({params/1e6:.2f} M)")
+    
+    # MACs
+    print(f"   乘加次数 (MACs)      : {macs:>15,} ({macs/1e9:.3f} G)")
+    
+    # FLOPs
+    print(f"   浮点运算数 (FLOPs)   : {flops:>15,} ({flops/1e9:.3f} G)")
+    
+    # 换算为 TOPS (Tera Operations Per Second)
+    print("\n   " + "─" * 60)
+    print("   ⚡ 算力需求 (假设满负载推理)")
+    print("   " + "─" * 60)
+    
+    fps_targets = [30, 60, 120, 1000]
+    for fps in fps_targets:
+        tops = (flops * fps) / 1e12
+        gflops = (flops * fps) / 1e9
+        label = f"@{fps}fps (batch={batch_size})"
+        print(f"   {label:<25}: {gflops:>8.2f} GFLOPS = {tops:.4f} TOPS")
+    
+    # 添加典型硬件参考
+    print("\n   " + "─" * 60)
+    print("   🖥️  典型硬件算力参考 (FP32)")
+    print("   " + "─" * 60)
+    print("   RTX 3060              :      12.74 TFLOPS")
+    print("   RTX 3080              :      29.77 TFLOPS")
+    print("   RTX 4090              :      82.58 TFLOPS")
+    print("   A100 (40GB)           :      19.49 TFLOPS")
+    print("   嵌入式 Jetson Orin    :       5.32 TFLOPS")
+    print("   车规级 TDA4VM         :       8.00 TOPS (INT8)")
+    
+    # 指标解释
+    print("\n   " + "─" * 60)
+    print("   📖 指标解释")
+    print("   " + "─" * 60)
+    print("""
+   • 参数量 (Parameters)
+     模型中可学习权重的总数。影响模型存储大小和内存占用。
+     1M 参数 ≈ 4MB (FP32) / 2MB (FP16) / 1MB (INT8)
+
+   • MACs (Multiply-Accumulate Operations)
+     乘加运算次数。一次 MAC = 一次乘法 + 一次加法。
+     这是深度学习中最核心的计算单元。
+
+   • FLOPs (Floating Point Operations)
+     浮点运算次数。通常 FLOPs ≈ 2 × MACs。
+     注意: 不同文献可能混用 FLOPs 和 MACs，需注意区分。
+
+   • GFLOPS / TFLOPS (Giga/Tera FLOPs Per Second)
+     每秒十亿/万亿次浮点运算，衡量算力需求或硬件性能。
+     模型需求: FLOPs × FPS; 硬件供给: 峰值 TFLOPS
+
+   • TOPS (Tera Operations Per Second)
+     每秒万亿次运算 (通常指 INT8/INT4 整数运算)。
+     1 TOPS = 1e12 OPS。常用于衡量 NPU/VPU 性能。
+
+   • 算力利用率
+     实际推理时，由于内存带宽、并行效率等因素，
+     通常只能达到硬件峰值算力的 30%-70%。
+""")
+
+
 def test_model(
     model,
     inputs,
     labels,
     criterion=None,
     optimizer=None,
-    onnx_file_path="model_test.onnx"
+    onnx_file_path="model_test.onnx",
+    test_inference_speed=True,
+    num_warmup=10,
+    num_iterations=100,
+    print_flops_per_layer=False
 ):
     """
     通用化模型测试函数：
@@ -37,137 +269,332 @@ def test_model(
     3. 支持前向传播、反向传播、损失计算。
     4. 导出 ONNX 模型并验证。
     5. 输出模型详细信息。
+    6. 计算 FLOPS 和推理速度（用于评估算力需求）。
     
     参数：
-    - model: PyTorch 模型实例化对象: torch.nn.Module
-    - inputs: 模型的输入张量: tensor 或 tulple(tensor1, tensor2, ...) 或 list(tensor1, tensor2, ...)
-    - labels: 模型的真实标签张量（用于损失计算）: tensor
+    - model: PyTorch 模型实例化对象
+    - inputs: 模型的输入张量 (tensor / tuple / list)
+    - labels: 模型的真实标签张量（用于损失计算）
     - criterion: 损失函数实例化对象，默认为 nn.MSELoss
     - optimizer: 优化器实例化对象，默认为 Adam
     - onnx_file_path: 导出的 ONNX 文件路径
+    - test_inference_speed: 是否测试推理速度，默认 True
+    - num_warmup: 预热次数，默认 10
+    - num_iterations: 测试推理次数，默认 100
+    - print_flops_per_layer: 是否打印每层的 FLOPs 详情，默认 False
     """
-    # 默认损失函数和优化器
+    # ==================== 初始化设置 ====================
     if criterion is None:
         criterion = nn.MSELoss()
     if optimizer is None:
         optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
-    # 将模型设为训练模式
-    model.train()
-    print("\n~~~~~~~~~~~~~~~~~~~ 🚀🚀 开始测试神经网络模型是否可以正常训练 🚀🚀 ~~~~~~~~~~~~~~~~~~~~")
-    # 打印模型结构信息
-    print("\n============== 模型结构信息 ==============")
+    # 统一处理输入数据格式
     _input_data = tuple(inputs) if isinstance(inputs, (tuple, list)) else inputs
-    summary(
-        model,
-        input_data=_input_data,
-        col_names=["input_size", "output_size", "num_params"],
-        depth=3,
-        device="cuda" if next(model.parameters()).is_cuda else "cpu"
+    batch_size = inputs[0].shape[0] if isinstance(inputs, (tuple, list)) else inputs.shape[0]
+    device = next(model.parameters()).device
+    original_training = model.training
+    
+    # batch_size=1 时必须使用 eval 模式（避免 BatchNorm 错误）
+    use_eval_mode = (batch_size == 1)
+    
+    print("\n" + "=" * 80)
+    print("🚀 开始测试神经网络模型")
+    print("=" * 80)
+    
+    if use_eval_mode:
+        print(f"\n⚠️  batch_size=1，全程使用评估模式 (model.eval())")
+        print("   提示：如需测试反向传播，请将 batch_size 设置为 > 1")
+    else:
+        print(f"\n✅ batch_size={batch_size}，支持训练模式测试")
+    
+    # ==================== 模型结构信息 ====================
+    print("\n" + "-" * 40)
+    print("📊 模型结构信息")
+    print("-" * 40)
+    
+    try:
+        model.eval()
+        summary(
+            model,
+            input_data=_input_data,
+            col_names=["input_size", "output_size", "num_params"],
+            depth=3,
+            device=str(device)
+        )
+    except Exception as e:
+        print(f"⚠️  torchinfo.summary 执行失败: {e}")
+    
+    # ==================== 算力需求评估 (使用 ptflops) ====================
+    print("\n" + "-" * 40)
+    print("⚡ 算力需求评估 (使用 ptflops)")
+    print("-" * 40)
+    
+    flops_info = calculate_flops_with_ptflops(
+        model, 
+        _input_data, 
+        device,
+        print_per_layer=print_flops_per_layer
     )
     
-    # 前向传播与loss计算
-    print("\n============== 前向传播 ==============")
-    if isinstance(inputs, (tuple, list)):
-        outputs = model(*inputs)
-        # 一行打印模型各个输入input的形状
-        print(f"✔ 模型各个输入的形状：{[input.shape for input in inputs]}")
-
+    if flops_info['success']:
+        print_flops_analysis(flops_info, batch_size=batch_size)
     else:
-        outputs = model(inputs)
-        print(f"✔ 输入形状：{inputs.shape}")
-
-    # 初始化loss变量
-    loss = None
+        print(f"   ⚠️  FLOPs 统计失败，尝试使用 fvcore 备用方案...")
+        try:
+            from fvcore.nn import FlopCountAnalysis, parameter_count
+            
+            model.eval()
+            flops_analysis = FlopCountAnalysis(model, _input_data)
+            total_flops = flops_analysis.total()
+            params = parameter_count(model)['']
+            
+            backup_info = {
+                'macs': total_flops // 2,
+                'flops': total_flops,
+                'params': params,
+                'success': True
+            }
+            print_flops_analysis(backup_info, batch_size=batch_size)
+        except Exception as e:
+            print(f"   ⚠️  备用方案也失败: {e}")
+            print(f"   参数量: {sum(p.numel() for p in model.parameters()):,}")
     
-    if isinstance(outputs, (tuple, list)):
-        print(f"✔ 模型各个输出的形状：{[output.shape for output in outputs]}")
-        for i, output in enumerate(outputs):
-            if labels.shape == output.shape:
-                loss = criterion(output, labels)
-                print(f"✔ 第{i+1}个模型输出对应了一个loss值: {loss.item()}")
-                break  # 找到第一个匹配的输出就停止
+    # ==================== 推理速度测试 ====================
+    if test_inference_speed:
+        print("\n" + "-" * 40)
+        print("⏱️  推理速度测试")
+        print("-" * 40)
         
-        if loss is None:
-            print("✘ 没有找到与标签形状匹配的输出，使用第一个输出计算损失")
-            loss = criterion(outputs[0], labels)
-    else:
-        print(f"✔ 模型输出形状：{outputs.shape}")
-        if labels.shape == outputs.shape:
-            loss = criterion(outputs, labels)
-            print(f"✔ 损失值：{loss.item()}")
-        else: 
-            print("✘ 模型输出形状与标签形状不匹配，尝试计算损失值")
-            # 尝试计算损失，即使形状不完全匹配
-            try:
-                loss = criterion(outputs, labels)
-                print(f"✔ 强制计算的损失值：{loss.item()}")
-            except Exception as e:
-                print(f"✘ 无法计算损失值: {e}")
-                return  # 如果无法计算损失，提前返回
-
-    # 确保loss不为None
-    if loss is None:
-        print("✘ 无法获得有效的loss值，停止测试")
-        return
-
-    # 反向传播
-    print("\n============== 反向传播 ==============")
-    optimizer.zero_grad()
-    loss.backward()
-    optimizer.step()
-    print("✔ 反向传播正常~")
-
-    # 可视化计算图
-    print("\n============== 计算图可视化 ==============")
-    graph = make_dot(loss, params=dict(model.named_parameters()))
-    graph.render("model_computation_graph", format="png")
-    print("✔ 计算图已保存为 'model_computation_graph.png'")
-
-    # 导出 ONNX 模型
-    print("\n============== 导出 ONNX 模型 ==============")
+        model.eval()
+        with torch.no_grad():
+            # 预热
+            for _ in range(num_warmup):
+                if isinstance(_input_data, tuple):
+                    _ = model(*_input_data)
+                else:
+                    _ = model(_input_data)
+            
+            if device.type == 'cuda':
+                torch.cuda.synchronize()
+            
+            # 计时测试
+            start_time = time.time()
+            for _ in range(num_iterations):
+                if isinstance(_input_data, tuple):
+                    _ = model(*_input_data)
+                else:
+                    _ = model(_input_data)
+            
+            if device.type == 'cuda':
+                torch.cuda.synchronize()
+            end_time = time.time()
+            
+            avg_time = (end_time - start_time) / num_iterations * 1000
+            fps = 1000 / avg_time
+            
+            print(f"   预热次数    : {num_warmup}")
+            print(f"   测试次数    : {num_iterations}")
+            print(f"   平均耗时    : {avg_time:.2f} ms")
+            print(f"   推理速度    : {fps:.2f} FPS")
+            print(f"   吞吐量      : {fps * batch_size:.2f} samples/s")
+            
+            # 计算实际算力消耗
+            if flops_info['success']:
+                actual_gflops = (flops_info['flops'] * fps) / 1e9
+                actual_tops = actual_gflops / 1000
+                print(f"   实际算力消耗: {actual_gflops:.2f} GFLOPS ({actual_tops:.4f} TOPS)")
+            
+            if device.type == 'cuda':
+                memory = torch.cuda.max_memory_allocated(device) / 1024**2
+                print(f"   GPU内存占用 : {memory:.2f} MB")
+                torch.cuda.reset_peak_memory_stats(device)
     
-    # 根据输入类型配置输入名称和动态轴
+    # ==================== 前向传播 ====================
+    print("\n" + "-" * 40)
+    print("🔄 前向传播测试")
+    print("-" * 40)
+    
+    # 根据 batch_size 设置模式
+    if use_eval_mode:
+        model.eval()
+    else:
+        model.train()
+    
+    if isinstance(_input_data, tuple):
+        outputs = model(*_input_data)
+    else:
+        outputs = model(_input_data)
+    
+    # 打印输入信息
     if isinstance(inputs, (tuple, list)):
-        input_names = [f"input_{i}" for i in range(len(inputs))]
-        dynamic_axes = {f"input_{i}": {0: "batch_size"} for i in range(len(inputs))}
+        input_shapes = [str(tuple(inp.shape)) for inp in inputs]
+        print(f"   输入形状    : [{', '.join(input_shapes)}]")
     else:
-        input_names = ["input"]
-        dynamic_axes = {"input": {0: "batch_size"}}
+        print(f"   输入形状    : {tuple(inputs.shape)}")
     
-    # 配置输出名称和动态轴
-    if isinstance(outputs, (tuple, list)):
-        output_names = [f"output_{i}" for i in range(len(outputs))]
-        for i in range(len(outputs)):
-            dynamic_axes[f"output_{i}"] = {0: "batch_size"}
+    # 打印输出信息
+    if isinstance(outputs, (tuple, list)) and not isinstance(outputs, torch.Tensor):
+        output_info = _format_output_structure(outputs)
+        print(f"   输出结构    : [{', '.join(output_info)}]")
+        loss, matched_output = _compute_loss_multi_output(outputs, labels, criterion)
     else:
-        output_names = ["output"]
-        dynamic_axes["output"] = {0: "batch_size"}
+        print(f"   输出形状    : {tuple(outputs.shape)}")
+        loss, matched_output = _compute_loss_single_output(outputs, labels, criterion)
     
-    torch.onnx.export(
-        model,
-        _input_data,
-        onnx_file_path,
-        input_names=input_names,
-        output_names=output_names,
-        dynamic_axes=dynamic_axes,
-        opset_version=11,
-    )
-    print(f"✔ ONNX 模型已保存至 {onnx_file_path}")
-    print("在 https://netron.app/ 上查看 ONNX 模型结构")
+    if loss is not None:
+        print(f"   损失值      : {loss.item():.6f}")
+    
+    # ==================== 反向传播 ====================
+    print("\n" + "-" * 40)
+    print("🔙 反向传播测试")
+    print("-" * 40)
+    
+    if use_eval_mode:
+        print("   ⏭️  跳过（batch_size=1 不支持训练模式）")
+    elif loss is None:
+        print("   ⏭️  跳过（无有效损失值）")
+    else:
+        try:
+            model.train()
+            optimizer.zero_grad()
+            
+            # 需要重新前向传播
+            if isinstance(_input_data, tuple):
+                outputs_train = model(*_input_data)
+            else:
+                outputs_train = model(_input_data)
+            
+            if isinstance(outputs_train, (tuple, list)) and not isinstance(outputs_train, torch.Tensor):
+                loss_train, _ = _compute_loss_multi_output(outputs_train, labels, criterion)
+            else:
+                loss_train, _ = _compute_loss_single_output(outputs_train, labels, criterion)
+            
+            loss_train.backward()
+            optimizer.step()
+            print("   ✅ 反向传播正常")
+        except Exception as e:
+            print(f"   ❌ 反向传播失败: {e}")
+    
+    # ==================== 计算图可视化 ====================
+    print("\n" + "-" * 40)
+    print("📈 计算图可视化")
+    print("-" * 40)
+    
+    try:
+        if loss is not None:
+            graph = make_dot(loss, params=dict(model.named_parameters()))
+            graph.render("model_computation_graph", format="png", cleanup=True)
+            print("   ✅ 已保存: model_computation_graph.png")
+        else:
+            print("   ⏭️  跳过（无有效损失值）")
+    except Exception as e:
+        print(f"   ⚠️  失败: {e}")
+    
+    # ==================== ONNX 导出 ====================
+    print("\n" + "-" * 40)
+    print("📦 ONNX 模型导出")
+    print("-" * 40)
+    
+    try:
+        model.eval()
+        
+        # 配置输入输出名称
+        if isinstance(inputs, (tuple, list)):
+            input_names = [f"input_{i}" for i in range(len(inputs))]
+            dynamic_axes = {name: {0: "batch_size"} for name in input_names}
+        else:
+            input_names = ["input"]
+            dynamic_axes = {"input": {0: "batch_size"}}
+        
+        output_names, output_dynamic = _get_output_names(outputs)
+        dynamic_axes.update(output_dynamic)
+        
+        torch.onnx.export(
+            model, _input_data, onnx_file_path,
+            input_names=input_names,
+            output_names=output_names,
+            dynamic_axes=dynamic_axes,
+            opset_version=11,
+        )
+        print(f"   ✅ 已保存: {onnx_file_path}")
+        print("   📎 可视化: https://netron.app/")
+    except Exception as e:
+        print(f"   ⚠️  导出失败: {e}")
+    
+    # 恢复原始状态
+    model.train(original_training)
+    
+    print("\n" + "=" * 80)
+    print("✅ 模型测试完成")
+    print("=" * 80 + "\n")
 
-    # # 使用 ONNX Runtime 推理
-    # print("\n============== ONNX Runtime 推理 ==============")
-    # ort_session = onnxruntime.InferenceSession(onnx_file_path)
-    # ort_inputs = {
-    #     onnx_model.graph.input[i].name: (
-    #         inputs[i].cpu().numpy() if isinstance(inputs, (tuple, list))
-    #         else inputs.cpu().numpy()
-    #     )
-    #     for i in range(len(onnx_model.graph.input))
-    # }
-    # ort_outs = ort_session.run(None, ort_inputs)
-    # print(f"ONNX 推理输出：{ort_outs}")
+
+def _format_output_structure(outputs):
+    """格式化多输出结构信息"""
+    info = []
+    for output in outputs:
+        if isinstance(output, torch.Tensor):
+            info.append(f"Tensor{tuple(output.shape)}")
+        elif isinstance(output, (tuple, list)):
+            sub = [f"Tensor{tuple(o.shape)}" if isinstance(o, torch.Tensor) else str(type(o).__name__) for o in output]
+            info.append(f"({', '.join(sub)})")
+        else:
+            info.append(type(output).__name__)
+    return info
+
+
+def _compute_loss_multi_output(outputs, labels, criterion):
+    """从多输出中计算损失"""
+    for output in outputs:
+        current = output[0] if isinstance(output, (tuple, list)) else output
+        if isinstance(current, torch.Tensor) and current.shape == labels.shape:
+            return criterion(current, labels), current
+    
+    # 使用第一个输出
+    first = outputs[0]
+    first = first[0] if isinstance(first, (tuple, list)) else first
+    if isinstance(first, torch.Tensor):
+        try:
+            return criterion(first, labels), first
+        except:
+            return None, None
+    return None, None
+
+
+def _compute_loss_single_output(outputs, labels, criterion):
+    """从单输出计算损失"""
+    if outputs.shape == labels.shape:
+        return criterion(outputs, labels), outputs
+    try:
+        return criterion(outputs, labels), outputs
+    except:
+        return None, None
+
+
+def _get_output_names(outputs):
+    """获取输出名称和动态轴配置"""
+    names, axes = [], {}
+    idx = 0
+    
+    if isinstance(outputs, (tuple, list)) and not isinstance(outputs, torch.Tensor):
+        for out in outputs:
+            if isinstance(out, (tuple, list)):
+                for sub in out:
+                    if isinstance(sub, torch.Tensor):
+                        names.append(f"output_{idx}")
+                        axes[f"output_{idx}"] = {0: "batch_size"}
+                        idx += 1
+            elif isinstance(out, torch.Tensor):
+                names.append(f"output_{idx}")
+                axes[f"output_{idx}"] = {0: "batch_size"}
+                idx += 1
+    else:
+        names = ["output"]
+        axes = {"output": {0: "batch_size"}}
+    
+    return names, axes
+
 
 if __name__ == "__main__":
     import os
@@ -198,7 +625,7 @@ if __name__ == "__main__":
     model = InjuryPredictModel(
         Ksize_init=Ksize_init,
         Ksize_mid=Ksize_mid,
-        num_classes_of_discrete=train_dataset.dataset.num_classes_of_discrete, # --- 修改：从加载的训练集中获取元数据 ---
+        num_classes_of_discrete=train_dataset.dataset.num_classes_of_discrete,
         num_blocks_of_tcn=num_blocks_of_tcn,
         tcn_channels_list=tcn_channels_list,
         num_layers_of_mlpE=num_layers_of_mlpE,
@@ -213,20 +640,32 @@ if __name__ == "__main__":
         fixed_channel_weight=fixed_channel_weight
     )
 
-    # model移动到CUDA
-    model = model.cuda()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
 
     # 示例输入数据（模拟数据集第1个batch）
-    batch_size = 128
+    batch_size = 64
 
-    x_acc = torch.tensor(train_dataset.dataset.x_acc[:batch_size], dtype=torch.float32).cuda()  # (B, 3, 150)
-    x_att_con = torch.tensor(train_dataset.dataset.x_att_continuous[:batch_size], dtype=torch.float32).cuda()  # (B, 14)
-    x_att_dis = torch.tensor(train_dataset.dataset.x_att_discrete[:batch_size], dtype=torch.long).cuda()  # (B, 4)
-    y_HIC = torch.tensor(train_dataset.dataset.y_HIC[:batch_size], dtype=torch.float32).cuda() # (B,)
-    y_Dmax = torch.tensor(train_dataset.dataset.y_Dmax[:batch_size], dtype=torch.float32).cuda() # (B,)
-    y_Nij = torch.tensor(train_dataset.dataset.y_Nij[:batch_size], dtype=torch.float32).cuda() # (B,)
-    y = torch.stack([y_HIC, y_Dmax, y_Nij], dim=1)  # (B, 3)
+    x_acc = torch.tensor(train_dataset.dataset.x_acc[:batch_size], dtype=torch.float32).to(device)
+    x_att_con = torch.tensor(train_dataset.dataset.x_att_continuous[:batch_size], dtype=torch.float32).to(device)
+    x_att_dis = torch.tensor(train_dataset.dataset.x_att_discrete[:batch_size], dtype=torch.long).to(device)
+    y_HIC = torch.tensor(train_dataset.dataset.y_HIC[:batch_size], dtype=torch.float32).to(device)
+    y_Dmax = torch.tensor(train_dataset.dataset.y_Dmax[:batch_size], dtype=torch.float32).to(device)
+    y_Nij = torch.tensor(train_dataset.dataset.y_Nij[:batch_size], dtype=torch.float32).to(device)
+    y = torch.stack([y_HIC, y_Dmax, y_Nij], dim=1)
+
+    print(f"\n{'='*80}")
+    print(f"模型: {type(model).__name__} | 设备: {device}")
+    print(f"输入: x_acc{tuple(x_acc.shape)}, x_att_con{tuple(x_att_con.shape)}, x_att_dis{tuple(x_att_dis.shape)}")
+    print(f"标签: {tuple(y.shape)}")
+    print(f"{'='*80}")
 
     criterion = weighted_loss()
-    # 测试模型
-    test_model(model, inputs=(x_acc, x_att_con, x_att_dis), labels=y)
+    
+    test_model(
+        model, 
+        inputs=(x_acc, x_att_con, x_att_dis), 
+        labels=y,
+        criterion=criterion,
+        print_flops_per_layer=False
+    )

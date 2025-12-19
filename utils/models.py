@@ -175,7 +175,7 @@ class TemporalConvNet(nn.Module):
         C_out = tcn_channels_list[-1] 
 
         if self.use_attention_pooling:
-            # --- 方案3: 注意力池化 + 可学习 PE ---
+            # --- 方案 注意力池化 + 可学习 PE ---
             
             # (a) 定义TCN输出的时间步长度 (L_feat)
             tcn_output_length = 150 // 2
