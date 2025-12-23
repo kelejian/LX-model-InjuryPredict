@@ -26,12 +26,12 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 from imblearn.metrics import geometric_mean_score, classification_report_imbalanced
 # --- 从 utils 导入必要的模块 ---
-# 确保此脚本与 utils 文件夹在同一项目结构下
 from utils import models
 from utils.weighted_loss import weighted_loss
 from utils.dataset_prepare import CrashDataset # 需要导入以加载 .pt 文件
 from utils.AIS_cal import AIS_cal_head, AIS_cal_chest, AIS_cal_neck 
 from utils.set_random_seed import GLOBAL_SEED, set_random_seed # 导入 GLOBAL_SEED
+from utils.optimizer_utils import get_parameter_groups
 
 from config import training_params, loss_params, model_params, kfold_params
 set_random_seed() # 设置全局随机种子
@@ -430,8 +430,11 @@ if __name__ == "__main__":
             print(f"模型总参数量: {total_params}, 可训练参数量: {trainable_params}")
             
         
+        # 定义损失函数
         criterion = weighted_loss(base_loss, weight_factor_classify, weight_factor_sample, loss_weights)
-        optimizer = optim.AdamW(model.parameters(), lr=Learning_rate, weight_decay=weight_decay)
+        # 优化器（参数分组管理）和学习率调度器
+        param_groups = get_parameter_groups(model, weight_decay=weight_decay, head_decay_ratio=0.05,head_keywords=('head',))   
+        optimizer = optim.AdamW(param_groups, lr=Learning_rate)
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=Epochs, eta_min=Learning_rate_min)
 
         # --- 6.5 初始化当前 Fold 的跟踪变量 ---

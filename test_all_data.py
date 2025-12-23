@@ -129,9 +129,9 @@ def load_model_and_data(run_dir, weight_file, data_dir=DATA_DIR):
     model.load_state_dict(torch.load(weight_path, map_location=device))
     model.eval()
     
-    return model, full_dataset, device, model_type, case_id_map
+    return model, full_dataset, device, case_id_map
 
-def run_inference(model, dataset, device, model_type):
+def run_inference(model, dataset, device):
     """在完整数据集上运行推理"""
     
     # DataLoader 直接加载 CrashDataset 实例，以保证顺序
@@ -324,10 +324,10 @@ if __name__ == "__main__":
     original_features_df = load_original_features(DISTRIBUTION_FILE)
     
     # 2. 加载模型、完整数据集和 case_id 映射
-    model, full_dataset, device, model_type, case_id_map = load_model_and_data(RUN_DIR, WEIGHT_FILE, DATA_DIR)
+    model, full_dataset, device, case_id_map = load_model_and_data(RUN_DIR, WEIGHT_FILE, DATA_DIR)
     
     # 3. 运行推理
-    predictions_np = run_inference(model, full_dataset, device, model_type)
+    predictions_np = run_inference(model, full_dataset, device)
     
     # 4. 创建并合并结果
     final_results_df = create_results_dataframe(full_dataset, predictions_np, original_features_df, case_id_map)

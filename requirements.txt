@@ -1,5 +1,4 @@
 torch
-torch-geometric
 numpy
 scikit-learn
 imbalanced-learn
