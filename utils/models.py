@@ -2,7 +2,60 @@
 
 import torch
 import torch.nn as nn
-from torch_geometric.nn import MLP as PygMLP # 直接用PyG的MLP模块
+# from torch_geometric.nn import MLP as PygMLP # 直接用PyG的MLP模块
+
+class FeatureSELayer(nn.Module):
+    """ 
+    针对 1D 特征向量的 SE 门控模块。
+    通过 Sigmoid 生成门控权重，动态调整融合后各模态特征的贡献度。
+    """
+    def __init__(self, channels, reduction=8):
+        super(FeatureSELayer, self).__init__()
+        reduced = max(4, channels // reduction)
+        self.fc = nn.Sequential(
+            nn.Linear(channels, reduced, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(reduced, channels, bias=False),
+            nn.Sigmoid() 
+        )
+
+    def forward(self, x):
+        # x shape: (batch_size, channels)
+        return x * self.fc(x)
+    
+class BaseMLP(nn.Module):
+    """
+    自定义 MLP 模块，遵循 Linear -> BN -> SiLU -> Dropout 的现代最佳实践。
+    最后一层保持线性 (Plain)，不进行归一化或激活，以保留特征分布。
+    """
+    def __init__(self, in_features, hidden_features, out_features, num_layers, dropout=0.0):
+        super(BaseMLP, self).__init__()
+        layers = []
+        
+        # 输入维度 -> 隐藏维度
+        curr_in = in_features
+        for _ in range(num_layers - 1):
+            layers.append(nn.Linear(curr_in, hidden_features, bias=False)) # BN前不需要Bias
+            layers.append(nn.BatchNorm1d(hidden_features))
+            layers.append(nn.SiLU(inplace=True))
+            if dropout > 0:
+                layers.append(nn.Dropout(dropout))
+            curr_in = hidden_features
+            
+        # 最后一层: 隐藏维度 -> 输出维度 (Plain Linear)
+        layers.append(nn.Linear(curr_in, out_features))
+        
+        self.mlp = nn.Sequential(*layers)
+        
+        # 权重初始化
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+
+    def forward(self, x):
+        return self.mlp(x)
 
 class TemporalBlock(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=3, dropout=0.1):
@@ -18,16 +71,18 @@ class TemporalBlock(nn.Module):
         super(TemporalBlock, self).__init__()
         padding = (kernel_size - 1) // 2  # 保持输入输出长度一致
 
-        self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size, stride=1, padding=padding)
+        self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size, stride=1, padding=padding, bias=False) # 无偏置配合BN
         self.bn1 = nn.BatchNorm1d(out_channels)
-        self.relu = nn.LeakyReLU(inplace=True)
-        self.dropout = nn.Dropout(dropout)
-        self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size, stride=1, padding=padding)
+        self.silu1 = nn.SiLU(inplace=True)
+        if dropout > 0:
+            self.dropout1 = nn.Dropout(dropout)
+        self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size, stride=1, padding=padding, bias=False)
         self.bn2 = nn.BatchNorm1d(out_channels)
+        self.silu2 = nn.SiLU(inplace=True)
 
         # 如果输入输出通道数不同,使用 1x1 卷积调整维度
         self.downsample = nn.Sequential(
-            nn.Conv1d(in_channels, out_channels, kernel_size=1, stride=1),
+            nn.Conv1d(in_channels, out_channels, kernel_size=1, stride=1, bias=False),
             nn.BatchNorm1d(out_channels)
         ) if in_channels != out_channels else None
 
@@ -35,16 +90,16 @@ class TemporalBlock(nn.Module):
         identity = x
         out = self.conv1(x)
         out = self.bn1(out)
-        out = self.relu(out)
-        out = self.dropout(out)
+        out = self.silu1(out)
+        if hasattr(self, 'dropout1'):
+            out = self.dropout1(out) # Post-Activation Dropout
         out = self.conv2(out)
         out = self.bn2(out)
         if self.downsample is not None:
             identity = self.downsample(x)
         out += identity
-        out = self.relu(out)
+        out = self.silu2(out)
         return out
-
 class ChannelAttention(nn.Module):
     """通道注意力模块，用于对不同方向的碰撞波形进行自适应加权
         也提供固定权重方案
@@ -64,12 +119,12 @@ class ChannelAttention(nn.Module):
         # 共享的MLP
         self.fc1 = nn.Sequential(
             nn.Conv1d(in_channels, in_channels * 2, 1, bias=True),
-            nn.LeakyReLU(),
+            nn.SiLU(inplace=True),
             nn.Conv1d(in_channels * 2, in_channels, 1, bias=True),
         )
         self.fc2 = nn.Sequential(
             nn.Conv1d(in_channels, in_channels * 2, 1, bias=True),
-            nn.LeakyReLU(),
+            nn.SiLU(inplace=True),
             nn.Conv1d(in_channels * 2, in_channels, 1, bias=True),
         )
         self.sigmoid = nn.Sigmoid()
@@ -148,7 +203,7 @@ class TemporalConvNet(nn.Module):
         self.initial_conv = nn.Sequential(
             nn.Conv1d(in_channels, tcn_channels_list[0], kernel_size=kernel_sizes[0], stride=2, padding=padding_init),  # 下采样
             nn.BatchNorm1d(tcn_channels_list[0]),
-            nn.LeakyReLU(),
+            nn.SiLU(inplace=True),
         )
 
         # 堆叠 TemporalBlock
@@ -197,7 +252,7 @@ class TemporalConvNet(nn.Module):
             self.attention_mlp = nn.Sequential(
                 nn.Conv1d(in_channels=C_out, out_channels=C_hidden_attn, kernel_size=1, bias=False),
                 nn.BatchNorm1d(C_hidden_attn),
-                nn.LeakyReLU(inplace=True),
+                nn.SiLU(inplace=True),
                 nn.Dropout(dropout), # 添加 Dropout
                 nn.Conv1d(in_channels=C_hidden_attn, out_channels=1, kernel_size=1, bias=True)
             )
@@ -282,15 +337,25 @@ class DiscreteFeatureEmbedding(nn.Module):
     def __init__(self, num_classes_of_discrete):
         """
         参数:
-            num_classes_of_discrete (list): 每个离散特征的类别数,例如 [7, 2, 2, 3]。
+            num_classes_of_discrete (list): 每个离散特征的类别数, 预期输入 [2, 3] 对应 [is_driver_side, OT]。
         """
         super(DiscreteFeatureEmbedding, self).__init__()
         
+        # --- 定义每个特征的 Embedding 维度 ---
+        # 1. OT(3类)->8维: 赋予足够容量以解耦隐含的物理属性(质量/身高/刚度等), 并保证在MLP输入端的信号强度。
+        # 2. is_driver_side(2类)->4维: 提升全局状态变量的表达能力, 且4/8均为2的幂次, 符合GPU内存对齐效率。
+        target_dims = [4, 8]
+        
         # 为每个离散特征创建嵌入层
-        self.embedding_layers = nn.ModuleList([
-            nn.Embedding(num_classes, num_classes - 1)  # 嵌入维度 = 类别数 - 1
-            for num_classes in num_classes_of_discrete
-        ])
+        self.embedding_layers = nn.ModuleList()
+        self.output_dim = 0 # 记录总输出维度供外部使用
+        
+        for i, num_classes in enumerate(num_classes_of_discrete):
+            # 优先使用预设维度，若越界则回退到 num_classes - 1 (最低为1)
+            dim = target_dims[i] if i < len(target_dims) else max(1, num_classes - 1)
+            
+            self.embedding_layers.append(nn.Embedding(num_classes, dim))
+            self.output_dim += dim
         
     def forward(self, x_att_discrete):
         """
@@ -317,17 +382,18 @@ class DiscreteFeatureEmbedding(nn.Module):
 
 class InjuryPredictModel(nn.Module):
     def __init__(self, num_classes_of_discrete, 
-                 Ksize_init=6, Ksize_mid=3,
-                 num_blocks_of_tcn=4,
+                 Ksize_init=8, Ksize_mid=3,
+                 num_blocks_of_tcn=3,
                  tcn_channels_list=None, 
-                 num_layers_of_mlpE=4, num_layers_of_mlpD=4, 
-                 mlpE_hidden=128, mlpD_hidden=96, 
-                 encoder_output_dim=128, decoder_output_dim=16, 
-                 dropout_MLP=0.2, dropout_TCN=0.15, 
+                 tcn_output_dim=128,
+                 mlp_encoder_output_dim=128, 
+                 mlp_decoder_output_dim=96,
+                 mlpE_hidden=192, mlpD_hidden=160, 
+                 num_layers_of_mlpE=3, num_layers_of_mlpD=3, 
+                 dropout_MLP=0.1, dropout_TCN=0, 
                  use_channel_attention=True, fixed_channel_weight=None):
         """
         损伤预测模型初始化。
-        (原教师模型输入输出架构)
 
         参数:
             num_classes_of_discrete (list): 每个离散特征的类别数。
@@ -335,6 +401,9 @@ class InjuryPredictModel(nn.Module):
             Ksize_mid (int): TCN 中间卷积核大小。
             num_blocks_of_tcn (int): TCN 编码器的块数。
             tcn_channels_list (list or None): TCN 每个块的输出通道数列表。如果为 None,则根据 num_blocks_of_tcn 自动设置。
+            tcn_output_dim (int): TCN 编码器的输出特征维度。
+            mlp_encoder_output_dim (int): MLP 编码器的输出特征维度。
+            mlp_decoder_output_dim (int): MLP 解码器的输出特征维度。
             num_layers_of_mlpE (int): MLP 编码器的层数。
             num_layers_of_mlpD (int): MLP 解码器的层数。
             mlpE_hidden (int): MLP 编码器的隐藏层维度。
@@ -347,7 +416,7 @@ class InjuryPredictModel(nn.Module):
         """
         super(InjuryPredictModel, self).__init__()
 
-        # 离散特征嵌入层
+        # 1. 离散特征嵌入层
         self.discrete_embedding = DiscreteFeatureEmbedding(num_classes_of_discrete)
 
         # TCN 编码器，处理 x_acc，现在支持通道注意力
@@ -363,119 +432,125 @@ class InjuryPredictModel(nn.Module):
         #         raise ValueError("tcn_channels_list 长度必须等于 num_blocks_of_tcn")
             
         #########################################
+        # 2. TCN 波形编码器配置
+        if fixed_channel_weight is not None and len(fixed_channel_weight) > 2: # 如果传入了针对 3 通道的 fixed_channel_weight，进行切片适配
+            print(f"Warning: fixed_channel_weight length {len(fixed_channel_weight)} > 2. Truncating to 2 for X, Y channels.")
+            fixed_channel_weight = fixed_channel_weight[:2]
+
         self.tcn = TemporalConvNet(
-            in_channels=3, # 注意输入通道数!!!!!
+            in_channels=2, # 仅 X, Y 加速度
             tcn_channels_list=tcn_channels_list, 
             Ksize_init=Ksize_init, 
             Ksize_mid=Ksize_mid, 
-            hidden=encoder_output_dim // 2, 
+            hidden=tcn_output_dim,
             dropout=dropout_TCN,
             use_channel_attention=use_channel_attention,
             fixed_channel_weight=fixed_channel_weight
         ) 
         #########################################
-
-        # MLP 编码器，处理连续特征和离散特征的嵌入
-        if num_layers_of_mlpE < 2:
-            raise ValueError("num_layers_of_mlpE 必须大于等于 2")
         
-        ###################################
-        mlp_encoder_input_dim = 14 + sum(num_classes_of_discrete) - len(num_classes_of_discrete)  # 14个连续特征 + 离散特征嵌入 
+        #########################################
+        # MLP 编码器，处理连续特征和离散特征的嵌入
+        # 连续特征: 10个 (impact_velocity, impact_angle, overlap, LL1, LL2, BTF, LLATTF, AFT, SP, RA)
+        # 离散特征: 维度由 DiscreteFeatureEmbedding.output_dim 提供 (4 + 8 = 12)
+        num_continuous_features = 10
+        mlp_encoder_input_dim = num_continuous_features + self.discrete_embedding.output_dim
+        # 3. MLP 编码器定义
+        self.mlp_encoder = BaseMLP(
+            in_features=mlp_encoder_input_dim,
+            hidden_features=mlpE_hidden,
+            out_features=mlp_encoder_output_dim,
+            num_layers=num_layers_of_mlpE,
+            dropout=dropout_MLP
+        )
         ###################################
 
-        self.mlp_encoder = PygMLP(
-            in_channels=mlp_encoder_input_dim, 
-            hidden_channels=mlpE_hidden,
-            out_channels=encoder_output_dim  // 2, # 输出特征维度
-            num_layers=num_layers_of_mlpE, # 隐层个数为num_layers-2
-            norm="batch_norm",
-            act="leaky_relu",
-            act_first=False, # 先归一化再激活
-            plain_last=True, # 最后一层不应用非线性激活、批归一化和 dropout
+        # 4. 高级特征融合层 (Fusion Layer)
+        # 融合向量 = [TCN特征, MLP编码特征, 原始标量特征(Skip Connection)]
+        fusion_dim = tcn_output_dim + mlp_encoder_output_dim + mlp_encoder_input_dim
+        
+        self.fusion_norm = nn.LayerNorm(fusion_dim) 
+        self.fusion_se = FeatureSELayer(fusion_dim, reduction=8)
+
+        # 5. MLP 解码器，解码出最终特征
+        self.mlp_decoder = BaseMLP(
+            in_features=fusion_dim,
+            hidden_features=mlpD_hidden,
+            out_features=mlp_decoder_output_dim,
+            num_layers=num_layers_of_mlpD,
             dropout=dropout_MLP
         )
 
-        self.bn1 = nn.BatchNorm1d(encoder_output_dim  + mlp_encoder_input_dim) # 归一化解码器输入特征
-        self.leaky_relu1 = nn.LeakyReLU()
-
-        # MLP 解码器，解码出最终特征
-        if num_layers_of_mlpD < 2:
-            raise ValueError("num_layers_of_mlpD 必须大于等于 2")
-        self.mlp_decoder = PygMLP(
-            in_channels=encoder_output_dim  + mlp_encoder_input_dim,  # 复用特征
-            hidden_channels=mlpD_hidden,
-            out_channels=decoder_output_dim, # 输出特征维度
-            num_layers=num_layers_of_mlpD, # 隐层个数为num_layers-2
-            norm="batch_norm",
-            act="leaky_relu",
-            act_first=False, # 先归一化再激活
-            plain_last=True, # 最后一层不应用非线性激活、批归一化和 dropout
-            dropout=dropout_MLP
+        # 6. 解码后共享激活层 (Post-Decoder Block)
+        # BaseMLP 输出是线性的，在分叉到 Heads 之前，统一做一次 BN+Activation
+        # 这作为"共享表示层"，提取对所有损伤任务通用的非线性特征
+        self.post_decoder_block = nn.Sequential(
+            nn.BatchNorm1d(mlp_decoder_output_dim),
+            nn.SiLU(inplace=True)
         )
 
-        self.bn2 = nn.BatchNorm1d(decoder_output_dim) # 归一化解码器输出特征
-        self.leaky_relu2 = nn.LeakyReLU()
-        # self.fc = nn.Linear(decoder_output_dim, 3)  # 输出 HIC, Dmax, Nij 三个预测值
-        # 三个独立的输出头，每个输出头有两个线性层，中间有bn+leakyrelu
+        # 7. 独立预测头 (Prediction Heads)
+        # 输入已经是 Activation 后的特征，所以 Head 的第一个 Linear 是有效的变换
+        # 结构: Linear -> BN -> SiLU -> Linear(Plain)
         self.HIC_head = nn.Sequential(
-            nn.Linear(decoder_output_dim, decoder_output_dim),
-            nn.BatchNorm1d(decoder_output_dim),
-            nn.LeakyReLU(),
-            nn.Linear(decoder_output_dim, 1)
+            nn.Linear(mlp_decoder_output_dim, mlp_decoder_output_dim // 2, bias=False),
+            nn.BatchNorm1d(mlp_decoder_output_dim // 2),
+            nn.SiLU(inplace=True),
+            nn.Linear(mlp_decoder_output_dim // 2, 1)
         )
         self.Dmax_head = nn.Sequential(
-            nn.Linear(decoder_output_dim, decoder_output_dim),
-            nn.BatchNorm1d(decoder_output_dim),
-            nn.LeakyReLU(),
-            nn.Linear(decoder_output_dim, 1)
+            nn.Linear(mlp_decoder_output_dim, mlp_decoder_output_dim // 2, bias=False),
+            nn.BatchNorm1d(mlp_decoder_output_dim // 2),
+            nn.SiLU(inplace=True),
+            nn.Linear(mlp_decoder_output_dim // 2, 1)
         )
         self.Nij_head = nn.Sequential(
-            nn.Linear(decoder_output_dim, decoder_output_dim),
-            nn.BatchNorm1d(decoder_output_dim),
-            nn.LeakyReLU(),
-            nn.Linear(decoder_output_dim, 1)
+            nn.Linear(mlp_decoder_output_dim, mlp_decoder_output_dim // 2, bias=False),
+            nn.BatchNorm1d(mlp_decoder_output_dim // 2),
+            nn.SiLU(inplace=True),
+            nn.Linear(mlp_decoder_output_dim // 2, 1)
         )
-        
+
     def forward(self, x_acc, x_att_continuous, x_att_discrete):
         """
         参数:
-            x_acc (torch.Tensor): 碰撞波形数据，形状为 (B, 3, 150)。
-            x_att_continuous (torch.Tensor): 连续特征，形状为 (B, 14)。
-            x_att_discrete (torch.Tensor): 离散特征，形状为 (B, 4)。
+            x_acc (torch.Tensor): 碰撞波形数据，形状为 (B, 2, 150)。
+            x_att_continuous (torch.Tensor): 连续特征，形状为 (B, 10)。
+            x_att_discrete (torch.Tensor): 离散特征，形状为 (B, 2)。
 
         返回:
             predictions: 预测的 HIC, Dmax, Nij 值，形状为 (B, 3)。
             encoder_output: 编码器的输出，形状为 (B, encoder_output_dim )。
             decoder_output: 解码器的输出，形状为 (B, decoder_output_dim)。
         """
-        # 1. 处理离散特征
-        x_discrete_embedded = self.discrete_embedding(x_att_discrete) 
-        # (B, 4) -> (B, sum(num_classes_of_discrete) - len(num_classes_of_discrete))
+        # 1. 特征编码
+        x_discrete_embedded = self.discrete_embedding(x_att_discrete) # (B, discrete_emb_dim)
+        x_features = torch.cat([x_att_continuous, x_discrete_embedded], dim=1) # (B, raw_dim)
+        
+        x_mlp_encoded = self.mlp_encoder(x_features) # (B, mlp_enc_dim)
+        x_tcn_encoded = self.tcn(x_acc)              # (B, tcn_out_dim)
 
-        # 2. 处理连续特征和离散特征的嵌入
-        x_features = torch.cat([x_att_continuous, x_discrete_embedded], dim=1) # (B, 14 + sum(num_classes_of_discrete) - len(num_classes_of_discrete))
-        x_features_encoded = self.mlp_encoder(x_features) # (B, encoder_output_dim  // 2)
+        # 2. 特征融合 (Encoder Out + Skip Connection)
+        # 拼接: [TCN特征, MLP编码特征, 原始输入特征] , 归一化 + SE 注意力重加权
+        fusion_vec = torch.cat([x_tcn_encoded, x_mlp_encoded, x_features], dim=1) # (B, fusion_dim)
 
-        # 3. 编码曲线特征x_acc
-        x_acc_encoded = self.tcn(x_acc)  
-        # (B, 3, 150) -> (B, encoder_output_dim  // 2)
+        fusion_vec = self.fusion_norm(fusion_vec) # 层归一化
+        fusion_vec = self.fusion_se(fusion_vec) # 动态调整各部分特征的权重，输出 (B, fusion_dim)
 
-        # 4. 合并 TCN 和 MLP 的特征, 作为编码器的输出
-        encoder_output = torch.cat([x_features_encoded, x_acc_encoded], dim=1) # (B, encoder_output_dim )
+        # 3. 解码
+        decoder_output_linear = self.mlp_decoder(fusion_vec) # (B, dec_dim), Linear output
 
-        # 5. 解码器输出
-        decoder_input = torch.cat([encoder_output, x_features], dim=1) # (B, encoder_output_dim  + 14 + sum(num_classes_of_discrete) - len(num_classes_of_discrete))
-        decoder_input = self.bn1(decoder_input)
-        decoder_input = self.leaky_relu1(decoder_input)
-        decoder_output = self.mlp_decoder(decoder_input)  # (B, decoder_output_dim)
+        # 4. 共享非线性变换
+        shared_features = self.post_decoder_block(decoder_output_linear) # (B, dec_dim), Activated output
 
-        # 6. 预测 HIC, Dmax, Nij 值
-        regression_input = self.bn2(decoder_output)
-        regression_input = self.leaky_relu2(regression_input)
-        # predictions = self.fc(regression_input) # (B, 3)
-        HIC_pred = self.HIC_head(regression_input)  # (B, 1)
-        Dmax_pred = self.Dmax_head(regression_input)  # (B, 1)
-        Nij_pred = self.Nij_head(regression_input)  # (B, 1)
-        predictions = torch.cat([HIC_pred, Dmax_pred, Nij_pred], dim=1)  # (B, 3)
+        # 5. 多任务预测
+        HIC_pred = self.HIC_head(shared_features) # (B, 1)
+        Dmax_pred = self.Dmax_head(shared_features) # (B, 1)
+        Nij_pred = self.Nij_head(shared_features) # (B, 1)
+        
+        predictions = torch.cat([HIC_pred, Dmax_pred, Nij_pred], dim=1) # (B, 3)
 
-        return predictions, encoder_output, decoder_output
+        # 返回 encoder_output (用于潜在的蒸馏或分析), 这里定义为 TCN+MLP 的拼接
+        encoder_output = torch.cat([x_tcn_encoded, x_mlp_encoded], dim=1) # (B, tcn_out_dim + mlp_enc_dim)
+
+        return predictions, encoder_output, decoder_output_linear

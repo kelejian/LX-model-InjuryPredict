@@ -45,13 +45,12 @@ class CrashDataset(Dataset):
             self.case_ids = inp_ids
 
             # --- 加载原始数据 ---
-            self.x_acc_raw = inputs['waveforms'] # 形状 (N, 3, 150) x/y/z direction acceleration waveforms
-            self.x_att_raw = inputs['params'] # 形状 (N, 18)  attributes
+            self.x_acc_raw = inputs['waveforms'] # 形状 (N, 2, 150) x/y direction acceleration waveforms
+            self.x_att_raw = inputs['params'] # 形状 (N, 12)  attributes
 
-            # 特征数据 (x_att_raw) 说明：形状 (N, 18)，18 个特征，包括连续和离散变量
-            # 0: impact_velocity, 1: impact_angle, 2: overlap, 3: occupant_type, 4: ll1, 5: ll2, 6: btf, 
-            # 7: pp, 8: plp, 9: lla_status, 10: llattf, 11: dz, 12: ptf, 13: aft, 14: aav_status, 
-            # 15: ttf, 16: sp (座椅前后位置), 17: recline_angle (座椅靠背角度)
+            # 特征数据 (x_att_raw) 说明：形状 (N, 12)
+            # 连续特征 (0-9): impact_velocity, impact_angle, overlap, LL1, LL2, BTF, LLATTF, AFT, SP, RA
+            # 离散特征 (10-11): is_driver_side, OT
 
             # --- 加载所有目标变量 ---
             self.y_HIC = labels['HIC']
@@ -66,8 +65,10 @@ class CrashDataset(Dataset):
         self.x_att_continuous = None
         self.x_att_discrete = None
 
-        self.continuous_indices = [0, 1, 2, 4, 5, 6, 7, 8, 10, 12, 13, 15, 16, 17]
-        self.discrete_indices = [3, 9, 11, 14]
+        # 连续特征索引: 0~9
+        self.continuous_indices = list(range(10))
+        # 离散特征索引: 10, 11 (is_driver_side, OT)
+        self.discrete_indices = [10, 11]
         self.num_classes_of_discrete = None
 
     def __len__(self):
@@ -94,23 +95,31 @@ class DataProcessor:
     """
     一个封装了数据预处理逻辑的类，包括拟合(fit)、转换(transform)和结果展示。
     """
-    def __init__(self, top_k_waveform=20):
+    def __init__(self, top_k_waveform=50):
         self.waveform_norm_factor = None
         self.top_k_waveform = top_k_waveform
         self.scaler_minmax = None
         self.scaler_maxabs = None
         self.encoders_discrete = None
+
+        # 定义连续与离散特征在原始12维向量中的索引
+        self.continuous_indices = list(range(10))
+        self.discrete_indices = [10, 11]
         
-        self.continuous_indices = [0, 1, 2, 4, 5, 6, 7, 8, 10, 12, 13, 15, 16, 17]
-        self.discrete_indices = [3, 9, 11, 14]
+        # --- 定义预处理策略 ---
+        # 连续特征子集中，应用 MaxAbsScaler 的索引 (归一化至 [-1, 1])
+        # Idx 1: impact_angle, Idx 2: overlap
+        self.maxabs_indices_in_continuous = [1, 2]
         
-        self.minmax_indices_in_continuous = [i for i, orig_idx in enumerate(self.continuous_indices) if orig_idx not in [1, 2, 16, 17]]
-        self.maxabs_indices_in_continuous = [i for i, orig_idx in enumerate(self.continuous_indices) if orig_idx in [1, 2, 16, 17]]
+        # 连续特征子集中，应用 MinMaxScaler 的索引 (归一化至 [0, 1])
+        # Idx 0: velocity, 3: LL1, 4: LL2, 5: BTF, 6: LLATTF, 7: AFT, 8: SP, 9: RA
+        self.minmax_indices_in_continuous = [0, 3, 4, 5, 6, 7, 8, 9]
         
+        # 更新特征名称映射
         self.feature_names = {
-            0: "impact_velocity", 1: "impact_angle", 2: "overlap", 3: "occupant_type", 4: "ll1",
-            5: "ll2", 6: "btf", 7: "pp", 8: "plp", 9: "lla_status", 10: "llattf", 11: "dz",
-            12: "ptf", 13: "aft", 14: "aav_status", 15: "ttf", 16: "sp", 17: "recline_angle"
+            0: "impact_velocity", 1: "impact_angle", 2: "overlap", 
+            3: "LL1", 4: "LL2", 5: "BTF", 6: "LLATTF", 7: "AFT", 8: "SP", 9: "RA",
+            10: "is_driver_side", 11: "OT"
         }
 
     def fit(self, train_indices, dataset):
@@ -372,7 +381,7 @@ if __name__ == '__main__':
     
     processor = DataProcessor(top_k_waveform=50)
     
-    # *** 关键修正：检查训练集是否为空 ***
+    # *** 检查训练集是否为空 ***
     if len(train_indices) == 0:
         raise ValueError("错误：根据划分规则，训练集为空。无法拟合 preprocessor。")
         

@@ -19,6 +19,7 @@ from utils.weighted_loss import weighted_loss
 from utils.dataset_prepare import CrashDataset
 from utils.AIS_cal import AIS_cal_head, AIS_cal_chest, AIS_cal_neck 
 from utils.set_random_seed import set_random_seed, GLOBAL_SEED
+from utils.optimizer_utils import get_parameter_groups
 
 # --- 从 config.py 导入超参数 ---
 from config import training_params, loss_params, model_params
@@ -202,8 +203,11 @@ if __name__ == "__main__":
     print(model)
     print(f"模型总参数量: {total_params}, 可训练参数量: {trainable_params}")
 
+    # 定义损失函数
     criterion = weighted_loss(base_loss, weight_factor_classify, weight_factor_sample, loss_weights)
-    optimizer = optim.AdamW(model.parameters(), lr=Learning_rate, weight_decay=weight_decay)
+    # 优化器（参数分组管理）和学习率调度器
+    param_groups = get_parameter_groups(model, weight_decay=weight_decay, head_decay_ratio=0.05,head_keywords=('head',))   
+    optimizer = optim.AdamW(param_groups, lr=Learning_rate)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=Epochs, eta_min=Learning_rate_min)
 
     # 初始化跟踪变量

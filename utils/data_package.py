@@ -63,9 +63,9 @@ def package_input_data(pulse_dir, params_path, case_id_list, output_path):
             # --- 3. 读取并处理波形 ---
             x_path = os.path.join(pulse_dir, f'x{case_id}.csv')
             y_path = os.path.join(pulse_dir, f'y{case_id}.csv')
-            z_path = os.path.join(pulse_dir, f'z{case_id}.csv')
+            # z_path = os.path.join(pulse_dir, f'z{case_id}.csv')
 
-            if not all(os.path.exists(p) for p in [x_path, y_path, z_path]):
+            if not all(os.path.exists(p) for p in [x_path, y_path]):  # Removed z_path check
                 print(f"警告：案例 {case_id} 的波形文件不完整，已跳过。")
                 continue
 
@@ -83,43 +83,39 @@ def package_input_data(pulse_dir, params_path, case_id_list, output_path):
             # 读取完整波形数据
             ax_full = pd.read_csv(x_path, sep='\t', header=None, usecols=[1]).values.flatten()
             ay_full = pd.read_csv(y_path, sep='\t', header=None, usecols=[1]).values.flatten()
-            az_full = pd.read_csv(z_path, sep='\t', header=None, usecols=[1]).values.flatten()
+            # az_full = pd.read_csv(z_path, sep='\t', header=None, usecols=[1]).values.flatten()
 
             ax_sampled = ax_full[downsample_indices]
             ay_sampled = ay_full[downsample_indices]
-            az_sampled = az_full[downsample_indices]
-
+            # az_sampled = az_full[downsample_indices]
             # ************************************************************************
             # 只取前150个点
             ax_sampled = ax_sampled[:150]
             ay_sampled = ay_sampled[:150]
-            az_sampled = az_sampled[:150]
+            # az_sampled = az_sampled[:150]
             # ************************************************************************
             
-            waveforms_np = np.stack([ax_sampled, ay_sampled, az_sampled]).squeeze() # 形状 (3, 150), 通道维度在前，分别是 x, y, z，对应索引 0, 1, 2
+            waveforms_np = np.stack([ax_sampled, ay_sampled]).squeeze() # 形状 (2, 150), 通道维度在前，分别是 x, y，对应索引 0, 1
 
             # --- 4. 提取匹配的参数 ---
             params_row = params_df.loc[case_id]
             params_np = np.array([
-                params_row['impact_velocity'],
-                params_row['impact_angle'],
-                params_row['overlap'],
-                params_row['occupant_type'],
-                params_row['ll1'],
-                params_row['ll2'],
-                params_row['btf'],
-                params_row['pp'],
-                params_row['plp'],
-                params_row['lla_status'],
-                params_row['llattf'],
-                params_row['dz'],
-                params_row['ptf'],
-                params_row['aft'],
-                params_row['aav_status'],
-                params_row['ttf'],
-                params_row['sp'],
-                params_row['recline_angle']
-            ], dtype=np.float32) # 形状 (18,)
+                # --- 连续特征 (Continuous) ---
+                params_row['impact_velocity'], # 碰撞速度 kph
+                params_row['impact_angle'], # 碰撞角度 °，分正负方向
+                params_row['overlap'], # 重叠率，分正负方向
+                params_row['LL1'], # 安全带一级限力值 KN
+                params_row['LL2'],  # 安全带二级限力值 KN
+                params_row['BTF'], # 预紧器点火时刻 ms
+                params_row['LLATTF'],  # 安全带二级限力切换时刻 ms
+                params_row['AFT'], # 气囊点火时刻 ms
+                params_row['SP'], # 座椅前后位置 mm
+                params_row['RA'], # 座椅靠背角 °；虽离散化但作为连续特征处理
+                
+                # --- 离散特征 (Discrete) ---
+                params_row['is_driver_side'], # 主驾侧标识 (0/1)
+                params_row['OT'] # 乘员体征 (1/2/3)
+            ], dtype=np.float32) # 形状 (12,)
 
             # --- 5. 添加到结果列表 ---
             processed_case_ids.append(case_id)
@@ -156,7 +152,7 @@ def package_input_data(pulse_dir, params_path, case_id_list, output_path):
 
 if __name__ == '__main__':
     pulse_dir = r'G:\VCS_acc_data\acc_data_before1111_6134'
-    params_path = r'E:\WPS Office\1628575652\WPS企业云盘\清华大学\我的企业文档\课题组相关\理想项目\仿真数据库相关\distribution\distribution_1111.csv'
+    params_path = r'E:\WPS Office\1628575652\WPS企业云盘\清华大学\我的企业文档\课题组相关\理想项目\仿真数据库相关\distribution\distribution_1220.csv'
     output_dir = r'E:\WPS Office\1628575652\WPS企业云盘\清华大学\我的企业文档\课题组相关\理想项目\DL_project_InjuryPredict\data'
     # 读取distribution文件
     if params_path.endswith('.npz'):

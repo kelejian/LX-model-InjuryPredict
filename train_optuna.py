@@ -17,6 +17,7 @@ from utils.dataset_prepare import CrashDataset
 from utils.AIS_cal import AIS_cal_head, AIS_cal_chest, AIS_cal_neck
 from utils.weighted_loss import weighted_loss
 from utils.set_random_seed import set_random_seed
+from utils.optimizer_utils import get_parameter_groups
 
 set_random_seed()
 
@@ -151,8 +152,11 @@ def objective(trial):
         dropout_MLP=dropout_MLP, dropout_TCN=dropout_TCN
     ).to(device)
 
+    # 定义损失函数
     criterion = weighted_loss(base_loss, weight_factor_classify, weight_factor_sample, loss_weights)
-    optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    # 优化器（参数分组管理）和学习率调度器
+    param_groups = get_parameter_groups(model, weight_decay=weight_decay, head_decay_ratio=0.05,head_keywords=('head',))   
+    optimizer = optim.AdamW(param_groups, lr=learning_rate)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=Epochs, eta_min=eta_min)
 
     val_metrics_list = []
