@@ -408,8 +408,6 @@ class InjuryPredictModel(nn.Module):
             num_layers_of_mlpD (int): MLP 解码器的层数。
             mlpE_hidden (int): MLP 编码器的隐藏层维度。
             mlpD_hidden (int): MLP 解码器的隐藏层维度。
-            encoder_output_dim  (int): 编码器的输出特征维度。用于蒸馏。
-            decoder_output_dim (int): 解码器的输出特征维度。用于蒸馏。
             dropout_MLP (float): MLP模块的Dropout 概率。
             dropout_TCN (float): TCN模块的Dropout 概率。
             use_channel_attention (bool): 是否使用通道注意力机制。
@@ -520,16 +518,15 @@ class InjuryPredictModel(nn.Module):
 
         返回:
             predictions: 预测的 HIC, Dmax, Nij 值，形状为 (B, 3)。
-            encoder_output: 编码器的输出，形状为 (B, encoder_output_dim )。
-            decoder_output: 解码器的输出，形状为 (B, decoder_output_dim)。
+            encoder_output: 编码器的输出，形状为 (B, tcn_output_dim + mlp_encoder_output_dim)。
+            decoder_output: 解码器的输出，形状为 (B, mlp_decoder_output_dim)。
         """
         # 1. 特征编码
         x_discrete_embedded = self.discrete_embedding(x_att_discrete) # (B, discrete_emb_dim)
         x_features = torch.cat([x_att_continuous, x_discrete_embedded], dim=1) # (B, raw_dim)
         
-        x_mlp_encoded = self.mlp_encoder(x_features) # (B, mlp_enc_dim)
-        x_tcn_encoded = self.tcn(x_acc)              # (B, tcn_out_dim)
-
+        x_mlp_encoded = self.mlp_encoder(x_features) # (B, mlp_encoder_output_dim)
+        x_tcn_encoded = self.tcn(x_acc)              # (B, tcn_output_dim)
         # 2. 特征融合 (Encoder Out + Skip Connection)
         # 拼接: [TCN特征, MLP编码特征, 原始输入特征] , 归一化 + SE 注意力重加权
         fusion_vec = torch.cat([x_tcn_encoded, x_mlp_encoded, x_features], dim=1) # (B, fusion_dim)
@@ -551,6 +548,6 @@ class InjuryPredictModel(nn.Module):
         predictions = torch.cat([HIC_pred, Dmax_pred, Nij_pred], dim=1) # (B, 3)
 
         # 返回 encoder_output (用于潜在的蒸馏或分析), 这里定义为 TCN+MLP 的拼接
-        encoder_output = torch.cat([x_tcn_encoded, x_mlp_encoded], dim=1) # (B, tcn_out_dim + mlp_enc_dim)
+        encoder_output = torch.cat([x_tcn_encoded, x_mlp_encoded], dim=1) # (B, tcn_output_dim + mlp_encoder_output_dim)
 
         return predictions, encoder_output, decoder_output_linear

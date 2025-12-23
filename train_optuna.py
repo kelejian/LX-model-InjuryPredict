@@ -112,11 +112,9 @@ def objective(trial):
     # mlpE_hidden = 224
     mlpD_hidden = trial.suggest_int("mlpD_hidden", 96, 192, step=32)
     # mlpD_hidden = 160
-    # encoder_output_dim = trial.suggest_int("encoder_output_dim", 64, 96, step=16)
-    encoder_output_dim = 96
-    # decoder_output_dim = trial.suggest_categorical("decoder_output_dim", [16, 32, 48])
-    decoder_output_dim = trial.suggest_int("decoder_output_dim", 16, 32, step=16)
-    # decoder_output_dim = 16
+    tcn_output_dim = trial.suggest_int("tcn_output_dim", 96, 160, step=32)
+    mlp_encoder_output_dim = trial.suggest_int("mlp_encoder_output_dim", 96, 128, step=32)
+    mlp_decoder_output_dim = trial.suggest_int("mlp_decoder_output_dim", 96, 256, step=32)
     # dropout_MLP = trial.suggest_float("dropout_MLP", 0.1, 0.45, step=0.05)
     dropout_MLP = trial.suggest_float("dropout_MLP", 0.05, 0.3, step=0.05)
     # dropout_MLP = 0.15
@@ -148,7 +146,7 @@ def objective(trial):
         tcn_channels_list=tcn_channels_list,
         num_layers_of_mlpE=num_layers_of_mlpE, num_layers_of_mlpD=num_layers_of_mlpD,
         mlpE_hidden=mlpE_hidden, mlpD_hidden=mlpD_hidden,
-        encoder_output_dim=encoder_output_dim, decoder_output_dim=decoder_output_dim,
+        tcn_output_dim=tcn_output_dim, mlp_encoder_output_dim=mlp_encoder_output_dim, mlp_decoder_output_dim=mlp_decoder_output_dim,
         dropout_MLP=dropout_MLP, dropout_TCN=dropout_TCN
     ).to(device)
 

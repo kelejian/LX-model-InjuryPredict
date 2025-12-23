@@ -266,8 +266,9 @@ if __name__ == "__main__":
     num_layers_of_mlpD = model_params['num_layers_of_mlpD']
     mlpE_hidden = model_params['mlpE_hidden']
     mlpD_hidden = model_params['mlpD_hidden']
-    encoder_output_dim = model_params['encoder_output_dim']
-    decoder_output_dim = model_params['decoder_output_dim']
+    tcn_output_dim = model_params['tcn_output_dim']
+    mlp_encoder_output_dim = model_params['mlp_encoder_output_dim']
+    mlp_decoder_output_dim = model_params['mlp_decoder_output_dim']
     dropout_MLP = model_params['dropout_MLP']
     dropout_TCN = model_params['dropout_TCN']
     use_channel_attention = model_params['use_channel_attention']
@@ -320,7 +321,7 @@ if __name__ == "__main__":
         num_blocks_of_tcn=num_blocks_of_tcn, tcn_channels_list=tcn_channels_list,
         num_layers_of_mlpE=num_layers_of_mlpE, num_layers_of_mlpD=num_layers_of_mlpD,
         mlpE_hidden=mlpE_hidden, mlpD_hidden=mlpD_hidden,
-        encoder_output_dim=encoder_output_dim, decoder_output_dim=decoder_output_dim,
+        tcn_output_dim=tcn_output_dim, mlp_encoder_output_dim=mlp_encoder_output_dim, mlp_decoder_output_dim=mlp_decoder_output_dim,
         dropout_MLP=dropout_MLP, dropout_TCN=dropout_TCN,
         use_channel_attention=use_channel_attention, fixed_channel_weight=fixed_channel_weight
     )
@@ -364,7 +365,7 @@ if __name__ == "__main__":
                 "tcn_channels_list": tcn_channels_list,
                 "num_layers_of_mlpE": num_layers_of_mlpE, "num_layers_of_mlpD": num_layers_of_mlpD,
                 "mlpE_hidden": mlpE_hidden, "mlpD_hidden": mlpD_hidden,
-                "encoder_output_dim": encoder_output_dim, "decoder_output_dim": decoder_output_dim,
+                "tcn_output_dim": tcn_output_dim, "mlp_encoder_output_dim": mlp_encoder_output_dim, "mlp_decoder_output_dim": mlp_decoder_output_dim,
                 "dropout_MLP": dropout_MLP, "dropout_TCN": dropout_TCN,
                 "use_channel_attention": use_channel_attention,
                 "fixed_channel_weight": fixed_channel_weight
@@ -412,7 +413,7 @@ if __name__ == "__main__":
             num_blocks_of_tcn=num_blocks_of_tcn, tcn_channels_list=tcn_channels_list,
             num_layers_of_mlpE=num_layers_of_mlpE, num_layers_of_mlpD=num_layers_of_mlpD,
             mlpE_hidden=mlpE_hidden, mlpD_hidden=mlpD_hidden,
-            encoder_output_dim=encoder_output_dim, decoder_output_dim=decoder_output_dim,
+            tcn_output_dim=tcn_output_dim, mlp_encoder_output_dim=mlp_encoder_output_dim, mlp_decoder_output_dim=mlp_decoder_output_dim,
             dropout_MLP=dropout_MLP, dropout_TCN=dropout_TCN,
             use_channel_attention=use_channel_attention, fixed_channel_weight=fixed_channel_weight
         ).to(device)
