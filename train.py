@@ -377,11 +377,12 @@ if __name__ == "__main__":
             if epoch % 50 == 0 or epoch == Epochs - 1:
                 # print(f"            | Val Channel Weights: X={mean_weights[0]:.3f}, Y={mean_weights[1]:.3f}, Z={mean_weights[2]:.3f}")
                 print(f"            | Val Channel Weights: X={mean_weights[0]:.3f}, Y={mean_weights[1]:.3f}")
-                print(f"            | Val Weight Variance: {weight_variance:.4f}")
+                print(f"            | Val Weight Variance: {weight_variance:.3f}")
 
 
         model_save_configs = [
             # (metric_key, best_var_name, epoch_var_name, filename, format_str, compare_func)
+            ('loss', 'Best_val_loss', 'best_loss_epoch', 'best_val_loss.pth', 'Val Loss: {:.3f}', min),
             ('accu_mais', 'Best_mais_accu', 'best_MAIS_accu_epoch', 'best_mais_accu.pth', 'MAIS accuracy: {:.2f}%', max),
             ('mae_dmax', 'Best_dmax_mae', 'best_dmax_epoch', 'best_dmax_mae.pth', 'Dmax MAE: {:.3f}', min),
             ('accu_chest', 'Best_chest_accu', 'best_chest_epoch', 'best_chest_accu.pth', 'Chest Acc: {:.2f}%', max),
@@ -404,10 +405,6 @@ if __name__ == "__main__":
                 torch.save(model.state_dict(), os.path.join(run_dir, filename))
                 print(f"Best model saved with val {format_str.format(current_value)} at epoch {epoch+1}")
 
-        # 跟踪最佳验证损失
-        if val_metrics['loss'] < Best_val_loss:
-            Best_val_loss, best_loss_epoch = val_metrics['loss'], epoch + 1
-
         # 早停逻辑
         if epoch > Epochs * 0.4 and len(val_loss_history) >= Patience:
             # 检查最佳指标是否在最近 Patience 个 epoch 之外
@@ -419,9 +416,9 @@ if __name__ == "__main__":
                 epochs_since_best_mais >= Patience and 
                 epochs_since_best_head >= Patience):
                 print(f"Early Stop at epoch: {epoch+1}!")
+                print(f"Best Val Loss: {Best_val_loss:.3f} (at epoch {best_loss_epoch})")
                 print(f"Best MAIS accuracy: {Best_mais_accu:.2f}% (at epoch {best_MAIS_accu_epoch})")
-                print(f"Lowest Val Loss: {Best_val_loss:.3f} (at epoch {best_loss_epoch})")
-                print(f"Lowest Dmax MAE: {Best_dmax_mae:.3f} (at epoch {best_dmax_epoch})")
+                print(f"Best Head accuracy: {Best_head_accu:.2f}% (at epoch {best_head_epoch})")
                 break
 
         print(f"            | Time: {time.time()-epoch_start_time:.2f}s")

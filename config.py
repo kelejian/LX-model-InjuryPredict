@@ -5,9 +5,9 @@
 
 # 1. 优化与训练相关
 training_params = {
-    "Epochs": 250,
+    "Epochs": 300,
     "Batch_size": 64,
-    "Learning_rate": 0.005,
+    "Learning_rate": 0.01,
     "Learning_rate_min": 0,
     "weight_decay": 0.1,
     "Patience": 50, # 早停轮数
@@ -42,5 +42,9 @@ model_params = {
 
 # K-Fold 专项设置
 kfold_params = {
-    "K": 5 # K-Fold 折数
+    "K": 5, # K-Fold 折数
+    "val_metrics_to_track": [
+        ("accu_mais", "max"),  # (指标名, 比较方式: "max" 或 "min")
+        ("loss", "min"),
+    ]
 }

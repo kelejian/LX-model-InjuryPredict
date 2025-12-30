@@ -36,6 +36,31 @@ from utils.optimizer_utils import get_parameter_groups
 from config import training_params, loss_params, model_params, kfold_params
 set_random_seed() # 设置全局随机种子
 
+def get_compare_func(func_indicator):
+    """根据配置中的指示器返回比较函数和初始值"""
+    if func_indicator == max or (isinstance(func_indicator, str) and func_indicator.lower() == 'max'):
+        return max, float('-inf'), lambda curr, best: curr > best
+    else:  # min
+        return min, float('inf'), lambda curr, best: curr < best
+
+def build_metric_trackers(val_metrics_to_track):
+    """
+    根据配置构建指标跟踪器字典。
+    
+    返回:
+        trackers (dict): 键为指标名，值为包含比较函数、初始值等的字典。
+    """
+    trackers = {}
+    for metric_name, compare_indicator in val_metrics_to_track:
+        _, initial_value, is_better = get_compare_func(compare_indicator)
+        trackers[metric_name] = {
+            'compare_indicator': compare_indicator,
+            'initial_value': initial_value,
+            'is_better': is_better,
+            'model_filename': f"best_{metric_name}_model.pth"
+        }
+    return trackers
+
 def run_one_epoch(model, loader, criterion, device, optimizer=None):
     """
     执行一个完整的训练或验证周期。
@@ -171,7 +196,7 @@ def plot_scatter(y_true, y_pred, ais_true, title, xlabel, save_path):
     plt.figure(figsize=(8, 7))
     colors = ['blue', 'green', 'yellow', 'orange', 'red', 'darkred']
     
-    # 修正：确保 ais_true 中的值不会索引越界
+    # 确保 ais_true 中的值不会索引越界
     ais_indices = np.clip(ais_true, 0, 5).astype(int)
     ais_colors = [colors[i] for i in ais_indices]
     
@@ -221,6 +246,94 @@ def plot_confusion_matrix(cm, labels, title, save_path):
     plt.tight_layout()
     plt.savefig(save_path)
     plt.close()
+
+def evaluate_and_plot_for_metric(model, model_path, val_loader_k, device, fold, metric_name, fold_run_dir, 
+                                  AIS_cal_head, AIS_cal_chest, AIS_cal_neck):
+    """
+    加载指定指标的最佳模型，执行评估并绘制图表。
+    
+    返回:
+        eval_results (dict): 包含该指标对应模型的详细评估结果。
+    """
+    if not os.path.exists(model_path):
+        print(f"  警告: 未找到 {model_path}，跳过该指标的评估。")
+        return None
+    
+    # 加载模型权重
+    model.load_state_dict(torch.load(model_path))
+    
+    # 执行评估
+    predictions, ground_truths = evaluate_fold(model, val_loader_k, device)
+    
+    pred_hic, pred_dmax, pred_nij = predictions[:, 0], predictions[:, 1], predictions[:, 2]
+    true_hic, true_dmax, true_nij = ground_truths['regression'][:, 0], ground_truths['regression'][:, 1], ground_truths['regression'][:, 2]
+    
+    # 计算 AIS 预测
+    ais_head_pred = AIS_cal_head(pred_hic)
+    ais_chest_pred = AIS_cal_chest(pred_dmax)
+    ais_neck_pred = AIS_cal_neck(pred_nij)
+    mais_pred = np.maximum.reduce([ais_head_pred, ais_chest_pred, ais_neck_pred])
+    
+    # 计算分类指标
+    cls_metrics_head = get_classification_metrics(ground_truths['ais_head'], ais_head_pred, list(range(6)))
+    cls_metrics_chest = get_classification_metrics(ground_truths['ais_chest'], ais_chest_pred, [0, 2, 3, 4, 5])
+    cls_metrics_neck = get_classification_metrics(ground_truths['ais_neck'], ais_neck_pred, [0, 2, 3, 4, 5])
+    cls_metrics_mais = get_classification_metrics(ground_truths['mais'], mais_pred, [0, 1, 2, 3, 4, 5])
+    
+    # 计算回归指标
+    reg_metrics_hic = get_regression_metrics(true_hic, pred_hic)
+    reg_metrics_dmax = get_regression_metrics(true_dmax, pred_dmax)
+    reg_metrics_nij = get_regression_metrics(true_nij, pred_nij)
+    
+    # 创建该指标专属的子目录
+    metric_plot_dir = os.path.join(fold_run_dir, f"eval_{metric_name}")
+    os.makedirs(metric_plot_dir, exist_ok=True)
+    
+    # 绘制散点图
+    plot_scatter(true_hic, pred_hic, ground_truths['ais_head'], 
+                 f'Fold {fold+1} (Best {metric_name}) - HIC', 'HIC', 
+                 os.path.join(metric_plot_dir, "scatter_HIC.png"))
+    plot_scatter(true_dmax, pred_dmax, ground_truths['ais_chest'], 
+                 f'Fold {fold+1} (Best {metric_name}) - Dmax', 'Dmax (mm)', 
+                 os.path.join(metric_plot_dir, "scatter_Dmax.png"))
+    plot_scatter(true_nij, pred_nij, ground_truths['ais_neck'], 
+                 f'Fold {fold+1} (Best {metric_name}) - Nij', 'Nij', 
+                 os.path.join(metric_plot_dir, "scatter_Nij.png"))
+    
+    # 绘制混淆矩阵
+    plot_confusion_matrix(cls_metrics_mais['conf_matrix'], [0, 1, 2, 3, 4, 5], 
+                          f'Fold {fold+1} (Best {metric_name}) - CM MAIS', 
+                          os.path.join(metric_plot_dir, "cm_mais.png"))
+    plot_confusion_matrix(cls_metrics_head['conf_matrix'], list(range(6)), 
+                          f'Fold {fold+1} (Best {metric_name}) - CM Head', 
+                          os.path.join(metric_plot_dir, "cm_head.png"))
+    plot_confusion_matrix(cls_metrics_chest['conf_matrix'], [0, 2, 3, 4, 5], 
+                          f'Fold {fold+1} (Best {metric_name}) - CM Chest', 
+                          os.path.join(metric_plot_dir, "cm_chest.png"))
+    plot_confusion_matrix(cls_metrics_neck['conf_matrix'], [0, 2, 3, 4, 5], 
+                          f'Fold {fold+1} (Best {metric_name}) - CM Neck', 
+                          os.path.join(metric_plot_dir, "cm_neck.png"))
+    
+    # 构建评估结果字典
+    eval_results = {
+        'accu_mais': cls_metrics_mais['accuracy'],
+        'accu_head': cls_metrics_head['accuracy'],
+        'accu_chest': cls_metrics_chest['accuracy'],
+        'accu_neck': cls_metrics_neck['accuracy'],
+        'g_mean_mais': cls_metrics_mais['g_mean'],
+        'mae_hic': reg_metrics_hic['mae'],
+        'rmse_hic': reg_metrics_hic['rmse'],
+        'r2_hic': reg_metrics_hic['r2'],
+        'mae_dmax': reg_metrics_dmax['mae'],
+        'rmse_dmax': reg_metrics_dmax['rmse'],
+        'r2_dmax': reg_metrics_dmax['r2'],
+        'mae_nij': reg_metrics_nij['mae'],
+        'rmse_nij': reg_metrics_nij['rmse'],
+        'r2_nij': reg_metrics_nij['r2'],
+    }
+    
+    print(f"    Fold {fold+1} (Best {metric_name}) 评估完成，图表已保存至 {metric_plot_dir}")
+    return eval_results
 
 def convert_numpy_types(obj):
     if isinstance(obj, dict):
@@ -276,6 +389,11 @@ if __name__ == "__main__":
 
     # K-Fold 设置
     K = kfold_params['K']
+    val_metrics_to_track = kfold_params['val_metrics_to_track']
+    
+    # 构建指标跟踪器
+    metric_trackers = build_metric_trackers(val_metrics_to_track)
+    print(f"将跟踪以下指标: {list(metric_trackers.keys())}")
 
     ############################################################################################
     ############################################################################################
@@ -334,9 +452,9 @@ if __name__ == "__main__":
     # --- 4. 初始化 KFold ---
     skf = StratifiedKFold(n_splits=K, shuffle=True, random_state=GLOBAL_SEED)
     
-    # --- 5. 存储每一折的最佳验证指标 ---
-    all_folds_best_metrics = [] # 存储每折的最佳 val_metrics 字典
-    all_folds_best_epochs = []  # 存储每折达到最佳指标的 epoch
+    # --- 5. 存储每一折的最佳验证指标 (按指标分组) ---
+    all_folds_results = {metric_name: {'best_metrics': [], 'best_epochs': [], 'eval_results': []} 
+                         for metric_name in metric_trackers.keys()}
 
     # --- add：初始保存 K-Fold 配置 ---
     results_path = os.path.join(main_run_dir, "KFold_TrainingRecord.json")
@@ -346,9 +464,10 @@ if __name__ == "__main__":
             "total_params": total_params,
             "trainable_params": trainable_params
         },
-        "dataset_info": {
+        "kfold_info": {
             "total_samples_for_kfold": len(combined_indices),
-            "k_value": K
+            "k_value": K,
+            "val_metrics_to_track": val_metrics_to_track  # 记录所有跟踪的指标
         },
         "hyperparameters": { # 记录使用的超参数
              "training": {
@@ -439,13 +558,20 @@ if __name__ == "__main__":
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=Epochs, eta_min=Learning_rate_min)
 
         # --- 6.5 初始化当前 Fold 的跟踪变量 ---
-        # (与 train.py 类似，但用于当前 Fold)
-        val_loss_history, val_mais_accu_history = [], []
-        best_fold_val_loss = float('inf')
-        best_fold_mais_accu = 0
-        best_fold_epoch = 0
+        val_loss_history = []
         
-        # --- 6.6 Epoch 训练循环 (内层循环，与 train.py 基本一致) ---
+        # 为每个跟踪的指标初始化状态
+        fold_metric_states = {}
+        for metric_name, tracker_info in metric_trackers.items():
+            fold_metric_states[metric_name] = {
+                'best_value': tracker_info['initial_value'],
+                'best_epoch': 0,
+                'best_metrics_dict': None,
+                'is_better': tracker_info['is_better'],
+                'model_filename': tracker_info['model_filename']
+            }
+        
+        # --- 6.6 Epoch 训练循环 (内层循环) ---
         if Patience > Epochs: current_patience = Epochs
         else: current_patience = Patience
             
@@ -459,18 +585,18 @@ if __name__ == "__main__":
             val_metrics = run_one_epoch(model, val_loader_k, criterion, device, optimizer=None)
             
             val_loss_history.append(val_metrics['loss'])
-            val_mais_accu_history.append(val_metrics['accu_mais'])
 
             # 打印当前 Fold 的 Epoch 信息
-            print(f"  Epoch {epoch+1}/{Epochs} | Train Loss: {train_metrics['loss']:.3f} | Val Loss: {val_metrics['loss']:.3f} | Val MAIS Acc: {val_metrics['accu_mais']:.2f}% | Time: {time.time()-epoch_start_time:.2f}s")
+            metric_strs = [f"{name}: {val_metrics[name]:.2f}" for name in metric_trackers.keys() if name != 'loss']
+            loss_str = f"Val Loss: {val_metrics['loss']:.3f}"
+            print(f"  Epoch {epoch+1}/{Epochs} | Train Loss: {train_metrics['loss']:.3f} | {loss_str} | {' | '.join(metric_strs)} | Time: {time.time()-epoch_start_time:.2f}s")
             
             scheduler.step()
 
-            # --- TensorBoard 记录 (与 train.py 类似) ---
+            # --- TensorBoard 记录 ---
             # 训练指标
             writer.add_scalar("Loss/Train", train_metrics['loss'], epoch)
             writer.add_scalar("Accuracy_Train/MAIS", train_metrics['accu_mais'], epoch)
-            # ... 可添加其他训练指标 ...
             writer.add_scalar("MAE_Train/Train_HIC", train_metrics['mae_hic'], epoch)
             writer.add_scalar("MAE_Train/Train_Dmax", train_metrics['mae_dmax'], epoch)
             writer.add_scalar("MAE_Train/Train_Nij", train_metrics['mae_nij'], epoch)
@@ -485,166 +611,127 @@ if __name__ == "__main__":
             writer.add_scalar("MAE_Val/Dmax", val_metrics['mae_dmax'], epoch)
             writer.add_scalar("MAE_Val/Nij", val_metrics['mae_nij'], epoch)
 
-            # --- 跟踪当前 Fold 的最佳模型 (以 MAIS 准确率为例) ---
-            if val_metrics['accu_mais'] > best_fold_mais_accu:
-                best_fold_mais_accu = val_metrics['accu_mais']
-                best_fold_val_loss = val_metrics['loss'] # 记录此时的损失
-                best_fold_epoch = epoch + 1
-                best_fold_metrics_dict = val_metrics # 存储整个指标字典
-                
-                # 保存当前 Fold 的最佳模型权重
-                torch.save(model.state_dict(), os.path.join(fold_run_dir, "best_mais_accu_model.pth"))
-                print(f"    Best model for Fold {fold+1} saved with Val MAIS Acc: {best_fold_mais_accu:.2f}% at epoch {best_fold_epoch}")
+            # --- 跟踪当前 Fold 的最佳模型 (为每个指标) ---
+            for metric_name, state in fold_metric_states.items():
+                current_value = val_metrics[metric_name]
+                if state['is_better'](current_value, state['best_value']):
+                    state['best_value'] = current_value
+                    state['best_epoch'] = epoch + 1
+                    state['best_metrics_dict'] = val_metrics.copy()
+                    
+                    # 保存当前指标的最佳模型权重
+                    torch.save(model.state_dict(), os.path.join(fold_run_dir, state['model_filename']))
+                    print(f"    [Fold {fold+1}] Best {metric_name} model saved: {current_value:.3f} at epoch {epoch+1}")
 
-            # --- 早停逻辑 (与 train.py 类似) ---
+            # --- 早停逻辑 (检查所有跟踪的指标) ---
             if epoch > Epochs * 0.4 and len(val_loss_history) >= current_patience:
-                # 简化：仅基于 MAIS 准确率是否连续 Patience 轮未超过最佳值
-                recent_accu = val_mais_accu_history[-current_patience:]
-                accu_no_improve = all(accu <= best_fold_mais_accu for accu in recent_accu)
-
-                if accu_no_improve:
+                all_stagnant = all(
+                    (epoch + 1 - state['best_epoch']) >= current_patience 
+                    for state in fold_metric_states.values()
+                )
+                if all_stagnant:
                     print(f"    Early Stop at epoch {epoch+1} for Fold {fold+1}!")
-                    break # 跳出当前 Fold 的 Epoch 循环
+                    for metric_name, state in fold_metric_states.items():
+                        print(f"    Best {metric_name}: {state['best_value']:.3f} (at epoch {state['best_epoch']})")
+                    break
 
-        # --- 6.7 当前 Fold 训练结束 ---
-        print(f"  Fold {fold+1} 训练完成。正在使用最佳模型 (epoch {best_fold_epoch}) 进行详细评估...")
+        # --- 6.7 当前 Fold 训练结束，为每个指标执行详细评估 ---
+        print(f"  Fold {fold+1} 训练完成。正在为每个跟踪指标执行详细评估...")
 
-        # --- 加载最佳模型并执行详细评估 ---
-        best_fold_model_path = os.path.join(fold_run_dir, "best_mais_accu_model.pth")
-        if os.path.exists(best_fold_model_path):
-            # 重新加载最佳权重
-            model.load_state_dict(torch.load(best_fold_model_path))
+        for metric_name, state in fold_metric_states.items():
+            model_path = os.path.join(fold_run_dir, state['model_filename'])
+            eval_results = evaluate_and_plot_for_metric(
+                model, model_path, val_loader_k, device, fold, metric_name, fold_run_dir,
+                AIS_cal_head, AIS_cal_chest, AIS_cal_neck
+            )
             
-            # 执行评估
-            predictions, ground_truths = evaluate_fold(model, val_loader_k, device)
-            
-            pred_hic, pred_dmax, pred_nij = predictions[:, 0], predictions[:, 1], predictions[:, 2]
-            true_hic, true_dmax, true_nij = ground_truths['regression'][:, 0], ground_truths['regression'][:, 1], ground_truths['regression'][:, 2]
+            # 记录结果
+            all_folds_results[metric_name]['best_metrics'].append(state['best_metrics_dict'] or val_metrics)
+            all_folds_results[metric_name]['best_epochs'].append(state['best_epoch'])
+            if eval_results:
+                all_folds_results[metric_name]['eval_results'].append(eval_results)
 
-            # 计算分类指标 (复用 eval_model.py 的逻辑)
-            cls_metrics_head = get_classification_metrics(ground_truths['ais_head'], AIS_cal_head(pred_hic),  list(range(6)))
-            cls_metrics_chest = get_classification_metrics(ground_truths['ais_chest'], AIS_cal_chest(pred_dmax), [0, 2, 3, 4, 5])
-            cls_metrics_neck = get_classification_metrics(ground_truths['ais_neck'], AIS_cal_neck(pred_nij), [0, 2, 3, 4, 5])
-            
-            mais_pred = np.maximum.reduce([AIS_cal_head(pred_hic), AIS_cal_chest(pred_dmax), AIS_cal_neck(pred_nij)])
-            cls_metrics_mais = get_classification_metrics(ground_truths['mais'], mais_pred, [0, 1, 2, 3, 4, 5])
-            
-            # 绘制并保存图表 (保存到 fold_run_dir)
-            plot_scatter(true_hic, pred_hic, ground_truths['ais_head'], 
-                         f'Fold {fold+1} - Head Injury Criterion (HIC)', 'HIC', 
-                         os.path.join(fold_run_dir, "val_scatter_plot_HIC.png"))
-                         
-            plot_scatter(true_dmax, pred_dmax, ground_truths['ais_chest'], 
-                         f'Fold {fold+1} - Chest Displacement (Dmax)', 'Dmax (mm)', 
-                         os.path.join(fold_run_dir, "val_scatter_plot_Dmax.png"))
-                         
-            plot_scatter(true_nij, pred_nij, ground_truths['ais_neck'], 
-                         f'Fold {fold+1} - Neck Injury Criterion (Nij)', 'Nij', 
-                         os.path.join(fold_run_dir, "val_scatter_plot_Nij.png"))
-
-            plot_confusion_matrix(cls_metrics_mais['conf_matrix'], [0, 1, 2, 3, 4, 5], 
-                                  f'Fold {fold+1} - Confusion Matrix - MAIS (6C)', 
-                                  os.path.join(fold_run_dir, "val_cm_mais_6c.png"))
-
-            # (可选) 绘制其他混淆矩阵
-            plot_confusion_matrix(cls_metrics_head['conf_matrix'], [0, 1, 2, 3, 4, 5], 
-                                  f'Fold {fold+1} - Confusion Matrix - AIS Head (6C)', 
-                                  os.path.join(fold_run_dir, "val_cm_head_6c.png"))
-            
-            plot_confusion_matrix(cls_metrics_chest['conf_matrix'], [0, 2, 3, 4, 5], 
-                                  f'Fold {fold+1} - Confusion Matrix - AIS Chest (5C)', 
-                                  os.path.join(fold_run_dir, "val_cm_chest_5c.png"))
-            
-            plot_confusion_matrix(cls_metrics_neck['conf_matrix'], [0, 2, 3, 4, 5], 
-                                  f'Fold {fold+1} - Confusion Matrix - AIS Neck (5C)', 
-                                  os.path.join(fold_run_dir, "val_cm_neck_5c.png"))
-
-            print(f"  Fold {fold+1} 详细评估图表已保存至 {fold_run_dir}")
-
-        else:
-            print(f"  警告: 未找到 {best_fold_model_path}，跳过 Fold {fold+1} 的详细评估绘图。")
-        # --- 评估结束 ---
-        writer.close() # 关闭当前 Fold 的 writer
+        writer.close()
         print(f"Fold {fold+1} finished in {time.time() - fold_start_time:.2f}s.")
-        print(f"  Best Val MAIS Accuracy for Fold {fold+1}: {best_fold_mais_accu:.2f}% (at epoch {best_fold_epoch})")
-        
-        # 记录当前 fold 的最佳结果
-        all_folds_best_metrics.append(best_fold_metrics_dict)
-        all_folds_best_epochs.append(best_fold_epoch)
 
     # --- 7. K-Fold 循环结束，计算并打印总体结果 ---
     print("\n" + "="*60)
     print("         K-Fold Cross-Validation Summary")
     print("="*60)
     
-    # 将列表转换为 DataFrame 便于计算
-    metrics_df = pd.DataFrame(all_folds_best_metrics)
+    kfold_summary = {}
     
-    # 计算主要指标的均值和标准差
-    mean_mais_acc = metrics_df['accu_mais'].mean()
-    std_mais_acc = metrics_df['accu_mais'].std()
-    mean_head_acc = metrics_df['accu_head'].mean()
-    std_head_acc = metrics_df['accu_head'].std()
-    mean_chest_acc = metrics_df['accu_chest'].mean()
-    std_chest_acc = metrics_df['accu_chest'].std()
-    mean_neck_acc = metrics_df['accu_neck'].mean()
-    std_neck_acc = metrics_df['accu_neck'].std()
-    
-    mean_hic_mae = metrics_df['mae_hic'].mean()
-    std_hic_mae = metrics_df['mae_hic'].std()
-    mean_dmax_mae = metrics_df['mae_dmax'].mean()
-    std_dmax_mae = metrics_df['mae_dmax'].std()
-    mean_nij_mae = metrics_df['mae_nij'].mean()
-    std_nij_mae = metrics_df['mae_nij'].std()
-    
-    mean_loss = metrics_df['loss'].mean()
-    std_loss = metrics_df['loss'].std()
-    
-    print(f"Ran {K}-Fold Cross-Validation.")
-    print(f"Average Best Epoch across folds: {np.mean(all_folds_best_epochs):.1f}")
-    
-    print("\n--- Average Validation Metrics (Mean +/- Std) ---")
-    print(f"  Loss      : {mean_loss:.4f} +/- {std_loss:.4f}")
-    print(f"  MAIS Acc  : {mean_mais_acc:.2f}% +/- {std_mais_acc:.2f}%")
-    print(f"  Head Acc  : {mean_head_acc:.2f}% +/- {std_head_acc:.2f}%")
-    print(f"  Chest Acc : {mean_chest_acc:.2f}% +/- {std_chest_acc:.2f}%")
-    print(f"  Neck Acc  : {mean_neck_acc:.2f}% +/- {std_neck_acc:.2f}%")
-    print(f"  HIC MAE   : {mean_hic_mae:.4f} +/- {std_hic_mae:.4f}")
-    print(f"  Dmax MAE  : {mean_dmax_mae:.4f} +/- {std_dmax_mae:.4f}")
-    print(f"  Nij MAE   : {mean_nij_mae:.4f} +/- {std_nij_mae:.4f}")
+    for metric_name in metric_trackers.keys():
+        print(f"\n--- Results for Best '{metric_name}' Model ---")
+        
+        metrics_df = pd.DataFrame(all_folds_results[metric_name]['best_metrics'])
+        best_epochs = all_folds_results[metric_name]['best_epochs']
+        
+        # 计算主要指标的均值和标准差
+        summary_for_metric = {
+            'mean_best_epoch': np.mean(best_epochs),
+            'mean_loss': metrics_df['loss'].mean(),
+            'std_loss': metrics_df['loss'].std(),
+            'mean_accu_mais': metrics_df['accu_mais'].mean(),
+            'std_accu_mais': metrics_df['accu_mais'].std(),
+            'mean_accu_head': metrics_df['accu_head'].mean(),
+            'std_accu_head': metrics_df['accu_head'].std(),
+            'mean_accu_chest': metrics_df['accu_chest'].mean(),
+            'std_accu_chest': metrics_df['accu_chest'].std(),
+            'mean_accu_neck': metrics_df['accu_neck'].mean(),
+            'std_accu_neck': metrics_df['accu_neck'].std(),
+            'mean_mae_hic': metrics_df['mae_hic'].mean(),
+            'std_mae_hic': metrics_df['mae_hic'].std(),
+            'mean_mae_dmax': metrics_df['mae_dmax'].mean(),
+            'std_mae_dmax': metrics_df['mae_dmax'].std(),
+            'mean_mae_nij': metrics_df['mae_nij'].mean(),
+            'std_mae_nij': metrics_df['mae_nij'].std(),
+        }
+        
+        # 如果有详细评估结果，也计算其统计
+        if all_folds_results[metric_name]['eval_results']:
+            eval_df = pd.DataFrame(all_folds_results[metric_name]['eval_results'])
+            for col in eval_df.columns:
+                summary_for_metric[f'eval_mean_{col}'] = eval_df[col].mean()
+                summary_for_metric[f'eval_std_{col}'] = eval_df[col].std()
+        
+        kfold_summary[metric_name] = summary_for_metric
+        
+        print(f"  Average Best Epoch: {summary_for_metric['mean_best_epoch']:.1f}")
+        print(f"  Loss      : {summary_for_metric['mean_loss']:.3f} +/- {summary_for_metric['std_loss']:.3f}")
+        print(f"  MAIS Acc  : {summary_for_metric['mean_accu_mais']:.2f}% +/- {summary_for_metric['std_accu_mais']:.2f}%")
+        print(f"  Head Acc  : {summary_for_metric['mean_accu_head']:.2f}% +/- {summary_for_metric['std_accu_head']:.2f}%")
+        print(f"  Chest Acc : {summary_for_metric['mean_accu_chest']:.2f}% +/- {summary_for_metric['std_accu_chest']:.2f}%")
+        print(f"  Neck Acc  : {summary_for_metric['mean_accu_neck']:.2f}% +/- {summary_for_metric['std_accu_neck']:.2f}%")
+        # 打印回归指标
+        print(f"  HIC MAE   : {summary_for_metric['mean_mae_hic']:.3f} +/- {summary_for_metric['std_mae_hic']:.3f}")
+        print(f"  Dmax MAE  : {summary_for_metric['mean_mae_dmax']:.3f} +/- {summary_for_metric['std_mae_dmax']:.3f}")
+        print(f"  Nij MAE   : {summary_for_metric['mean_mae_nij']:.3f} +/- {summary_for_metric['std_mae_nij']:.3f}")
+
     
     print("="*60)
     
     # --- 8. 保存 K-Fold 总体结果 ---
     print("K-Fold 训练完成，正在加载初始记录并添加总结...")
 
-    # 1. 准备 K-Fold 总结数据
-    kfold_summary_data = {
-        "mean_val_loss": mean_loss, "std_val_loss": std_loss,
-        "mean_val_mais_acc": mean_mais_acc, "std_val_mais_acc": std_mais_acc,
-        "mean_val_head_acc": mean_head_acc, "std_val_head_acc": std_head_acc,
-        "mean_val_chest_acc": mean_chest_acc, "std_val_chest_acc": std_chest_acc,
-        "mean_val_neck_acc": mean_neck_acc, "std_val_neck_acc": std_neck_acc,
-        "mean_val_hic_mae": mean_hic_mae, "std_val_hic_mae": std_hic_mae,
-        "mean_val_dmax_mae": mean_dmax_mae, "std_val_dmax_mae": std_dmax_mae,
-        "mean_val_nij_mae": mean_nij_mae, "std_val_nij_mae": std_nij_mae,
-        "mean_best_epoch": np.mean(all_folds_best_epochs)
-    }
-
-    # 2. 加载现有记录
     try:
         with open(results_path, "r") as f:
             final_kfold_record = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         print(f"警告: 未找到或无法解析 {results_path}。将创建一个新的记录文件。")
-        final_kfold_record = initial_kfold_record # Fallback
+        final_kfold_record = initial_kfold_record
 
-    # 3. 添加新结果并转换类型
-    final_kfold_record["kfold_summary"] = convert_numpy_types(kfold_summary_data)
-    final_kfold_record["per_fold_best_metrics"] = convert_numpy_types(all_folds_best_metrics)
-    final_kfold_record["best_epochs_per_fold"] = all_folds_best_epochs
+    # 添加按指标分组的结果
+    final_kfold_record["kfold_summary_by_metric"] = convert_numpy_types(kfold_summary)
+    final_kfold_record["per_fold_results_by_metric"] = convert_numpy_types({
+        metric_name: {
+            'best_metrics': data['best_metrics'],
+            'best_epochs': data['best_epochs'],
+            'eval_results': data['eval_results']
+        }
+        for metric_name, data in all_folds_results.items()
+    })
 
-    # 4. 覆盖保存
     with open(results_path, "w") as f:
         json.dump(final_kfold_record, f, indent=4)
         
