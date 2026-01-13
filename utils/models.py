@@ -224,7 +224,7 @@ class TemporalConvNet(nn.Module):
 
         self.temporal_blocks = nn.Sequential(*layers)
 
-        # --- 3. 池化层修改 ---
+        # --- 3. 池化层 ---
         
         # C_out 即 TCN 的最终输出通道数
         C_out = tcn_channels_list[-1] 
@@ -282,7 +282,7 @@ class TemporalConvNet(nn.Module):
         # 3. TCN 堆叠
         x = self.temporal_blocks(x)  # (B, C_out, L_feat), L_feat=75
 
-        # 4. 池化 (修改)
+        # 4. 池化
         if self.use_attention_pooling:
             # --- 方案3: 注意力池化 + 可学习 PE (含 Dropout) ---
             

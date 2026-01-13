@@ -160,7 +160,7 @@ def package_input_data(pulse_dir, params_path, case_id_list, output_path):
 
 if __name__ == '__main__':
     pulse_dir = r'G:\VCS_acc_data\acc_data_before1111_6134'
-    params_path = r'E:\WPS Office\1628575652\WPS企业云盘\清华大学\我的企业文档\课题组相关\理想项目\仿真数据库相关\distribution\distribution_1230.csv'
+    params_path = r'E:\WPS Office\1628575652\WPS企业云盘\清华大学\我的企业文档\课题组相关\理想项目\仿真数据库相关\distribution\distribution_0113.csv'
     output_dir = r'E:\WPS Office\1628575652\WPS企业云盘\清华大学\我的企业文档\课题组相关\理想项目\LX-model-InjuryPredict\data'
     # 读取distribution文件
     if params_path.endswith('.npz'):
@@ -235,7 +235,7 @@ if __name__ == '__main__':
         impact_velocities = distribution_df.loc[case_ids_need, 'impact_velocity'].values
         
         # 不同AIS等级使用不同颜色
-        plt.figure(figsize=(10, 6))
+        plt.figure(figsize=(8,6))
         colors = ['blue', 'green', 'yellow', 'orange', 'red', 'darkred']
         ais_colors = [colors[min(ais, 5)] for ais in ais_labels]
         

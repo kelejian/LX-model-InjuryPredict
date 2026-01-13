@@ -405,7 +405,7 @@ if __name__ == '__main__':
     torch.save(test_dataset, './data/test_dataset.pt')
     print("\n处理后的训练、验证和测试数据集已保存。")
 
-    # --- 新增: 打印详细的划分摘要 ---
+    # --- 打印详细的划分摘要 ---
     print(f"\n--- 数据集划分摘要 ---")
     print(f"  - 数据集总案例数: {split_summary['total_cases_in_dataset']}")
     print(f"  - 强制排除 (Exclude): {split_summary['forced_exclude_found']} (已找到并排除)")
@@ -425,10 +425,9 @@ if __name__ == '__main__':
     if total_check != split_summary['total_cases_in_dataset']:
          print(f"  *** 警告: 总数 {total_check} 与数据集案例数 {split_summary['total_cases_in_dataset']} 不匹配! ***")
     print(f"-----------------------\n")
-    # --- 结束新增 ---
 
     def get_label_distribution(subset):
-        # 修正：检查 subset.indices 是否为空
+        # 检查 subset.indices 是否为空
         if len(subset.indices) == 0: return "空"
         labels = [subset.dataset.mais[i] for i in subset.indices]
         unique, counts = np.unique(labels, return_counts=True)
@@ -439,11 +438,10 @@ if __name__ == '__main__':
     print(f"  - 验证集: {get_label_distribution(val_dataset)}")
     print(f"  - 测试集: {get_label_distribution(test_dataset)}")
     
-    # (原逻辑)
     train_loader = DataLoader(train_dataset, batch_size=128, shuffle=True, num_workers=0)
     print("\nTesting DataLoader...")
     
-    # 修正：检查训练集是否为空
+    # 检查训练集是否为空
     if len(train_dataset) > 0:
         try:
             batch_start_time = time.time()

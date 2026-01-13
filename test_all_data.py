@@ -175,7 +175,7 @@ def create_results_dataframe(dataset, predictions_np, original_features_df, case
         'AIS_head_true_raw': dataset.ais_head,
         'AIS_chest_true_raw': dataset.ais_chest,
         'AIS_neck_true_raw': dataset.ais_neck,
-        'MAIS_true_raw': dataset.mais, # 新增 MAIS 真值
+        'MAIS_true_raw': dataset.mais, # MAIS 真值
     })
     
     # 2. 添加模型预测值
@@ -203,7 +203,7 @@ def create_results_dataframe(dataset, predictions_np, original_features_df, case
     results_df['AIS_head_diff'] = results_df['AIS_head_pred'] - results_df['AIS_head_true_raw']
     results_df['AIS_chest_diff'] = results_df['AIS_chest_pred'] - results_df['AIS_chest_true_raw']
     results_df['AIS_neck_diff'] = results_df['AIS_neck_pred'] - results_df['AIS_neck_true_raw']
-    results_df['MAIS_diff'] = results_df['MAIS_pred'] - results_df['MAIS_true_raw'] # 新增 MAIS 误差
+    results_df['MAIS_diff'] = results_df['MAIS_pred'] - results_df['MAIS_true_raw'] # MAIS 误差
     
     # 6. 添加数据集类型 (新)
     results_df['dataset_type'] = results_df['case_id'].map(case_id_map)

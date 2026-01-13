@@ -5,18 +5,18 @@
 
 # 1. 优化与训练相关
 training_params = {
-    "Epochs": 300,
+    "Epochs": 360,
     "Batch_size": 64,
-    "Learning_rate": 0.01,
+    "Learning_rate": 0.005,
     "Learning_rate_min": 0,
     "weight_decay": 0.1,
-    "Patience": 50, # 早停轮数
+    "Patience": 75, # 早停轮数
 }
 
 # 2. 损失函数相关
 loss_params = {
     "base_loss": "mae",
-    "weight_factor_classify": 1.1,
+    "weight_factor_classify": 1.05,
     "weight_factor_sample": 0.2,
     "loss_weights": (0.5, 1.0, 20.0), # HIC, Dmax, Nij 各自损失的权重
 }

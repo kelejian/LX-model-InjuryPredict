@@ -173,7 +173,7 @@ def objective(trial):
         if epoch >= Epochs - 20:
             val_metrics_list.append(val_metrics)
 
-    # --- 修改：计算并返回新的多目标优化值 ---
+    # --- 计算并返回新的多目标优化值 ---
     avg_mais_acc = np.mean([m['accu_mais'] for m in val_metrics_list])
     avg_head_acc = np.mean([m['accu_head'] for m in val_metrics_list])
     avg_chest_acc = np.mean([m['accu_chest'] for m in val_metrics_list])
@@ -194,7 +194,7 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"加载研究失败: {e}")
         print("创建新的多目标（准确率）优化研究...")
-        # --- 修改：配置新的多目标优化方向 ---
+        # --- 配置新的多目标优化方向 ---
         study = optuna.create_study(
             sampler=optuna.samplers.NSGAIISampler(),
             study_name=study_name,
@@ -219,7 +219,7 @@ if __name__ == "__main__":
         joblib.dump(study, study_file)
         print(f"最终研究状态已保存至 {study_file}")
 
-    # --- 修改：打印新的Pareto前沿结果 ---
+    # --- 打印新的Pareto前沿结果 ---
     print("\n" + "="*50)
     print("           Pareto Front Results (Accuracy-focused)")
     print("="*50)

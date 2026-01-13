@@ -183,7 +183,7 @@ def get_classification_metrics(y_true, y_pred, labels):
     
     return {
         'accuracy': accuracy_score(y_true, y_pred) * 100,
-        'g_mean': geometric_mean_score(y_true, y_pred, labels=labels, average='multiclass'), # 修正: KFold中可能样本少，指定average
+        'g_mean': geometric_mean_score(y_true, y_pred, labels=labels, average='multiclass'), # KFold中可能样本少，指定average
         'conf_matrix': confusion_matrix(y_true, y_pred, labels=labels),
         'report': classification_report_imbalanced(
             y_true, y_pred, labels=labels, digits=3, 

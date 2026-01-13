@@ -173,7 +173,7 @@ def plot_continuous_distributions(combined_df, columns, output_dir):
         plt.close()
 
 def plot_categorical_distributions(combined_df, columns, output_dir):
-    """为离散/等级特征绘制百分比直方图,并添加计数 (最终修正版v2)"""
+    """为离散/等级特征绘制百分比直方图,并添加计数"""
     print(f"\n正在绘制 {len(columns)} 个离散/等级特征的分布图...")
     output_subdir = os.path.join(output_dir, "2_Categorical_Distributions")
     os.makedirs(output_subdir, exist_ok=True)
@@ -216,7 +216,7 @@ def plot_categorical_distributions(combined_df, columns, output_dir):
             edgecolor='black'
         )
 
-        # --- 3. 添加标签 (修正版：使用字典查找) ---
+        # --- 3. 添加标签 (使用字典查找) ---
         # 为每个子集和类别创建一个查找字典
         lookup = {}
         for _, row in plot_data.iterrows():
