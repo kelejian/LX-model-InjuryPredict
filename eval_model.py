@@ -69,7 +69,7 @@ def test(model, loader):
         'ais_chest': np.concatenate(all_true_ais_chest),
         'ais_neck': np.concatenate(all_true_ais_neck),
         'mais': np.concatenate(all_true_mais),
-        'OT': np.concatenate(all_ot)
+        'ot': np.concatenate(all_ot)
     }
     
     return preds, trues
@@ -93,7 +93,7 @@ def get_classification_metrics(y_true, y_pred, labels):
     
     return {
         'accuracy': accuracy_score(y_true, y_pred) * 100,
-        'g_mean': geometric_mean_score(y_true, y_pred, labels=labels),
+        'g_mean': geometric_mean_score(y_true, y_pred, labels=labels, average='multiclass'),
         'conf_matrix': confusion_matrix(y_true, y_pred, labels=labels),
         'report': classification_report_imbalanced(
             y_true, y_pred, labels=labels, digits=3, 
@@ -146,14 +146,14 @@ def plot_confusion_matrix(cm, labels, title, save_path):
     plt.yticks(tick_marks, labels, fontsize=12)
     plt.xlabel('Predicted Label', fontsize=14)
     plt.ylabel('True Label', fontsize=14)
-    thresh = cm.max() / 2.
+    thresh = cm.max() / 2. if cm.max() > 0 else 0.5 
     for i, j in np.ndindex(cm.shape):
         plt.text(j, i, format(cm[i, j], 'd'),
                  horizontalalignment="center",
                  color="white" if cm[i, j] > thresh else "black",
                  fontsize=12)
-    plt.tight_layout()
-    plt.savefig(save_path)
+    plt.tight_layout(pad=0.5)  # 减少边距，从默认的 1.08 降低到 0.5
+    plt.savefig(save_path, bbox_inches='tight', pad_inches=0.1)  # 添加紧凑保存选项
     plt.close()
 
 def generate_report_section(title, reg_metrics, cls_metrics_6c):
@@ -180,11 +180,28 @@ if __name__ == "__main__":
     from dataclasses import dataclass
     @dataclass
     class args:
-        run_dir: str = r'E:\课题组相关\理想项目\LX-model-InjuryPredict\runs\InjuryPredictModel_KFold_01142310\Fold_1'
-        weight_file: str = 'best_loss_model.pth'
+        run_dir: str = r'E:\WPS Office\1628575652\WPS企业云盘\清华大学\我的企业文档\课题组相关\理想项目\LX-model-InjuryPredict\runs\InjuryPredictModel_01281059'
+        weight_file: str = 'best_val_loss.pth'
 
     # --- 1. 加载模型和数据 ---
-    with open(os.path.join(args.run_dir, "TrainingRecord.json"), "r") as f:
+    # 尝试加载普通训练记录
+    record_path = os.path.join(args.run_dir, "TrainingRecord.json")
+    
+    # 如果找不到，尝试查找是否是 K-Fold 训练的子目录结构
+    if not os.path.exists(record_path):
+        # 尝试在当前目录找 KFold 记录
+        kfold_record_path = os.path.join(args.run_dir, "KFold_TrainingRecord.json")
+        if os.path.exists(kfold_record_path):
+             record_path = kfold_record_path
+        else:
+            # 尝试在父目录找 KFold 记录 (标准 K-Fold 结构)
+            parent_dir = os.path.dirname(args.run_dir)
+            parent_kfold_record = os.path.join(parent_dir, "KFold_TrainingRecord.json")
+            if os.path.exists(parent_kfold_record):
+                record_path = parent_kfold_record
+
+    print(f"Reading training record from: {record_path}")
+    with open(record_path, "r") as f:
         training_record = json.load(f)
     
     model_params = training_record["hyperparameters"]["model"]
@@ -203,7 +220,7 @@ if __name__ == "__main__":
     # --- 2. 执行预测 ---
     predictions, ground_truths = test(model, test_loader)
     
-    ot = ground_truths['OT']  # 乘员体征类别
+    ot = ground_truths['ot']  # 乘员体征类别
     pred_hic, pred_dmax, pred_nij = predictions[:, 0], predictions[:, 1], predictions[:, 2]
     true_hic, true_dmax, true_nij = ground_truths['regression'][:, 0], ground_truths['regression'][:, 1], ground_truths['regression'][:, 2]
 
@@ -241,6 +258,11 @@ if __name__ == "__main__":
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Model has {total_params} parameters.")
 
+    # 打印回归指标
+    print("\n--- Regression Metrics ---")
+    print(f"HIC - MAE: {reg_metrics_hic['mae']:.4f}, RMSE: {reg_metrics_hic['rmse']:.4f}, R²: {reg_metrics_hic['r2']:.4f}")
+    print(f"Dmax - MAE: {reg_metrics_dmax['mae']:.4f}, RMSE: {reg_metrics_dmax['rmse']:.4f}, R²: {reg_metrics_dmax['r2']:.4f}")
+    print(f"Nij - MAE: {reg_metrics_nij['mae']:.4f}, RMSE: {reg_metrics_nij['rmse']:.4f}, R²: {reg_metrics_nij['r2']:.4f}")
     # 打印MAIS准确率, 和三个部位多分类准确率
     print(f"MAIS Accuracy: {cls_metrics_mais['accuracy']:.2f}%")
     print(f"Head AIS-6C Accuracy: {cls_metrics_head['accuracy']:.2f}%")

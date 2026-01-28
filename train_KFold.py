@@ -254,8 +254,8 @@ def plot_confusion_matrix(cm, labels, title, save_path):
                  horizontalalignment="center",
                  color="white" if cm[i, j] > thresh else "black",
                  fontsize=12)
-    plt.tight_layout()
-    plt.savefig(save_path)
+    plt.tight_layout(pad=0.5)  # 减少边距，从默认的 1.08 降低到 0.5
+    plt.savefig(save_path, bbox_inches='tight', pad_inches=0.1)  # 添加紧凑保存选项
     plt.close()
 
 def evaluate_and_plot_for_metric(model, model_path, val_loader_k, device, fold, metric_name, fold_run_dir, 

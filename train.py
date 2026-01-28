@@ -123,9 +123,9 @@ def convert_numpy_types(obj):
             return [convert_numpy_types(item) for item in obj]
         elif isinstance(obj, tuple):
             return tuple(convert_numpy_types(item) for item in obj)
-        elif isinstance(obj, np.integer):
+        elif isinstance(obj, (np.integer, np.int_)):
             return int(obj)
-        elif isinstance(obj, np.floating):
+        elif isinstance(obj, (np.floating, np.float64)):
             return float(obj)
         elif isinstance(obj, np.ndarray):
             return obj.tolist()
