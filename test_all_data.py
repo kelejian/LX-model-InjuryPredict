@@ -123,7 +123,7 @@ def load_model_and_data(run_dir, weight_file, data_dir=DATA_DIR):
     # 4. 实例化模型
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    model = models.InjuryPredictModel(**model_params, num_classes_of_discrete=num_classes_of_discrete).to(device)
+    model = models.InjuryPredictModel(**model_params).to(device)
 
     # 5. 加载权重
     weight_path = os.path.join(run_dir, weight_file)

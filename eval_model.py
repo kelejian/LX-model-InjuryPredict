@@ -213,7 +213,7 @@ if __name__ == "__main__":
     test_loader = DataLoader(test_dataset, batch_size=256, shuffle=False, num_workers=0)
 
     print(f"加载 InjuryPredictModel 架构 (来自 {args.run_dir})")
-    model = models.InjuryPredictModel(**model_params, num_classes_of_discrete=train_dataset.dataset.num_classes_of_discrete).to(device)
+    model = models.InjuryPredictModel(**model_params).to(device)
     
     model.load_state_dict(torch.load(os.path.join(args.run_dir, args.weight_file)))
 

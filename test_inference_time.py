@@ -83,7 +83,6 @@ if __name__ == "__main__":
 
     # --- 根据模型类型加载模型 ---
     model = models.InjuryPredictModel(
-            num_classes_of_discrete=dataset.num_classes_of_discrete,
             **model_params
         ).to(device)
     

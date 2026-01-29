@@ -499,7 +499,8 @@ if __name__ == "__main__":
                 "tcn_output_dim": tcn_output_dim, "mlp_encoder_output_dim": mlp_encoder_output_dim, "mlp_decoder_output_dim": mlp_decoder_output_dim,
                 "dropout_MLP": dropout_MLP, "dropout_TCN": dropout_TCN,
                 "use_channel_attention": use_channel_attention,
-                "fixed_channel_weight": fixed_channel_weight
+                "fixed_channel_weight": fixed_channel_weight,
+                "num_classes_of_discrete": num_classes_of_discrete
             }
         }
     }
